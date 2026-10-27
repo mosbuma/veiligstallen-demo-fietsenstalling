@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AppSettings {
+  id                      String   @id @default("default")
+  fmsBaseUrl              String   @default("http://localhost:3000")
+  citycode                String   @default("")
+  locationId              String   @default("")
+  dataproviderUsername    String   @default("")
+  dataproviderPassword    String   @default("")
+  reportingUsername       String   @default("")
+  reportingPassword       String   @default("")
+  occupationMode          String   @default("both") // indirect | direct | both
+  clockOffsetSeconds      Int      @default(0)
+  passRangeStart          Int      @default(1000)
+  passRangeEnd            Int      @default(1999)
+  passRangeNext           Int      @default(1000)
+  barcodeRangeStart       Int      @default(200000)
+  barcodeRangeEnd         Int      @default(299999)
+  barcodeRangeNext        Int      @default(200000)
+  defaultIdType           Int      @default(0)
+  defaultBiketypeId       Int      @default(1)
+  defaultSectionCapacity  Int      @default(20)
+  tariffStepsJson         String   @default("[{\"timespan\":1,\"cost\":0.5,\"unit\":\"hours\"}]")
+  lastFmsBatchAt          DateTime?
+  lastFmsBatchOk          Boolean?
+  lastFmsBatchMessage     String   @default("")
+  updatedAt               DateTime @updatedAt
+}
+
+model MetadataCache {
+  id        String   @id @default(cuid())
+  cacheKey  String   @unique
+  payload   Json
+  fetchedAt DateTime @default(now())
+  expiresAt DateTime
+}
+
+model Account {
+  id        String   @id @default(cuid())
+  label     String?
+  createdAt DateTime @default(now())
+  passes    Pass[]
+}
+
+model Pass {
+  id          String   @id @default(cuid())
+  accountId   String?
+  account     Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  passCode    String   @unique
+  idType      Int      @default(0)
+  createdAt   DateTime @default(now())
+  bicycles    Bicycle[]
+  visits      Visit[]
+}
+
+model Bicycle {
+  id                 String   @id @default(cuid())
+  barcode            String   @unique
+  biketypeId         Int      @default(1)
+  passId             String?
+  pass               Pass?    @relation(fields: [passId], references: [id], onDelete: SetNull)
+  floorPresent       Boolean  @default(false)
+  floorSectionId     String   @default("")
+  floorStallPlace    String   @default("")
+  floorPlacementKind String   @default("assigned")
+  floorFmsSectionId  String   @default("")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  visits             Visit[]
+}
+
+model Visit {
+  id                      String    @id @default(cuid())
+  externalTransactionId   String    @unique
+  passId                  String?
+  pass                    Pass?     @relation(fields: [passId], references: [id], onDelete: SetNull)
+  bicycleId               String?
+  bicycle                 Bicycle?  @relation(fields: [bicycleId], references: [id], onDelete: SetNull)
+  sectionId               String
+  stallPlace              String   @default("")
+  placementKind           String   @default("assigned") // assigned | other
+  fmsSectionId            String   @default("")
+  physicallyPresent       Boolean  @default(true)
+  idcode                  String
+  idType                  Int       @default(0)
+  biketypeId              Int       @default(1)
+  checkInDate             DateTime
+  checkInType             String    @default("user")
+  checkOutDate            DateTime?
+  checkOutType            String?
+  stallingsduur           Int?
+  stallingskosten         Decimal?  @db.Decimal(8, 2)
+  paymentMethod           String?   // saldo | cash | pin | subscription
+  subscriptionWaived      Boolean   @default(false)
+  status                  String    @default("open") // open | closed
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  fmsLogs                 FmsLog[]
+}
+
+model FmsLog {
+  id           String   @id @default(cuid())
+  visitId      String?
+  visit        Visit?   @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  method       String
+  path         String
+  requestBody  Json
+  statusCode   Int?
+  responseBody Json?
+  error        String?
+  createdAt    DateTime @default(now())
+}

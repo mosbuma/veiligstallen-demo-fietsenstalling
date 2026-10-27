@@ -1,0 +1,2 @@
+ALTER TABLE "Visit" ADD COLUMN "stallPlace" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Visit" ADD COLUMN "physicallyPresent" BOOLEAN NOT NULL DEFAULT true;

@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "AppSettings" ADD COLUMN     "barcodeRangeEnd" INTEGER NOT NULL DEFAULT 299999,
+ADD COLUMN     "passRangeEnd" INTEGER NOT NULL DEFAULT 1999;
+
+-- AlterTable
+ALTER TABLE "Bicycle" ALTER COLUMN "barcode" DROP NOT NULL;

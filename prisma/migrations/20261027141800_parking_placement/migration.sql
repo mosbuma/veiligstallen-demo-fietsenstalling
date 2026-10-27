@@ -1,0 +1,3 @@
+ALTER TABLE "AppSettings" ADD COLUMN "defaultSectionCapacity" INTEGER NOT NULL DEFAULT 20;
+ALTER TABLE "Visit" ADD COLUMN "placementKind" TEXT NOT NULL DEFAULT 'assigned';
+ALTER TABLE "Visit" ADD COLUMN "fmsSectionId" TEXT NOT NULL DEFAULT '';
