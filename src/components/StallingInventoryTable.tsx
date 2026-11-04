@@ -3,6 +3,7 @@
 import { displayPassCode } from "@/lib/pass-display";
 import {
   buildStallingRows,
+  inventarisBarcode,
   sectorPlaatsForFloor,
   sectorPlaatsForVisit,
   type StallingFloorBike,
@@ -84,7 +85,7 @@ export function StallingInventoryTable({
             }
 
             const v = row.visit;
-            const bc = v.bicycle?.barcode ?? "";
+            const bc = inventarisBarcode(v);
             const selected = Boolean(bc && selectedBarcode === bc);
             const scanned = bc && scannedBarcodes?.has(bc);
             const pending = pendingVisitIds?.has(v.id);

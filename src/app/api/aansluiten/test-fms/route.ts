@@ -1,25 +1,12 @@
 import { testFmsDataproviderLogin } from "@/lib/aansluiten-login";
-import { getSettings, updateSettings, type AppSettingsDto } from "@/lib/settings";
+import { applyAansluitenTestPatch } from "@/lib/aansluiten-settings-patch";
+import type { AppSettingsDto } from "@/lib/settings";
 import { NextResponse } from "next/server";
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json().catch(() => ({}))) as Partial<AppSettingsDto> & {
-      dataproviderPassword?: string;
-      reportingPassword?: string;
-    };
-    if (Object.keys(body).length > 0) {
-      const current = await getSettings();
-      const patch = { ...body };
-      if (patch.dataproviderPassword === "••••••" || !patch.dataproviderPassword?.length) {
-        delete patch.dataproviderPassword;
-      }
-      if (patch.reportingPassword === "••••••" || !patch.reportingPassword?.length) {
-        delete patch.reportingPassword;
-      }
-      await updateSettings({ ...current, ...patch });
-    }
-    const settings = await getSettings();
+    const body = (await req.json().catch(() => ({}))) as Partial<AppSettingsDto>;
+    const settings = await applyAansluitenTestPatch("dataprovider", body);
     const result = await testFmsDataproviderLogin(settings);
     return NextResponse.json(result);
   } catch (e) {

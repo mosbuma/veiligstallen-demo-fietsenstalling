@@ -1,6 +1,8 @@
 import { isSyntheticPassCode } from "@/lib/pass-display";
 import { prisma } from "@/lib/db";
 import { getSettings, type AppSettingsDto } from "@/lib/settings";
+import { getActiveStallingProfileId } from "@/lib/stalling-profile";
+import { activeStallingScope } from "@/lib/stalling-scope";
 import { passCodesInUseFromStallingInventory } from "@/lib/stalling-inventory";
 
 export type PoolSlice = { start: number; end: number; next: number; remaining: number };
@@ -42,12 +44,13 @@ export class PoolExhaustedError extends Error {
 }
 
 async function consumePassCode(): Promise<string> {
+  const profileId = await getActiveStallingProfileId();
   return prisma.$transaction(async (tx) => {
-    const row = await tx.appSettings.findUniqueOrThrow({ where: { id: "default" } });
+    const row = await tx.stallingProfile.findUniqueOrThrow({ where: { id: profileId } });
     if (row.passRangeNext > row.passRangeEnd) throw new PoolExhaustedError("pass");
     const passCode = String(row.passRangeNext);
-    await tx.appSettings.update({
-      where: { id: "default" },
+    await tx.stallingProfile.update({
+      where: { id: profileId },
       data: { passRangeNext: row.passRangeNext + 1 },
     });
     return passCode;
@@ -55,12 +58,13 @@ async function consumePassCode(): Promise<string> {
 }
 
 async function consumeBarcode(): Promise<string> {
+  const profileId = await getActiveStallingProfileId();
   return prisma.$transaction(async (tx) => {
-    const row = await tx.appSettings.findUniqueOrThrow({ where: { id: "default" } });
+    const row = await tx.stallingProfile.findUniqueOrThrow({ where: { id: profileId } });
     if (row.barcodeRangeNext > row.barcodeRangeEnd) throw new PoolExhaustedError("barcode");
     const barcode = String(row.barcodeRangeNext);
-    await tx.appSettings.update({
-      where: { id: "default" },
+    await tx.stallingProfile.update({
+      where: { id: profileId },
       data: { barcodeRangeNext: row.barcodeRangeNext + 1 },
     });
     return barcode;
@@ -78,9 +82,10 @@ export async function pickRandomUnusedPoolPass(
   settings?: AppSettingsDto
 ): Promise<string | null> {
   const s = settings ?? (await getSettings());
+  const scope = await activeStallingScope();
   const [passes, openVisits] = await Promise.all([
-    prisma.pass.findMany({ select: { passCode: true } }),
-    prisma.visit.findMany({ where: { status: "open" }, select: { idcode: true } }),
+    prisma.pass.findMany({ where: scope, select: { passCode: true } }),
+    prisma.visit.findMany({ where: { ...scope, status: "open" }, select: { idcode: true } }),
   ]);
   const inUse = new Set(passCodesInUseFromStallingInventory(openVisits));
   const candidates = passes
@@ -97,6 +102,7 @@ export async function issuePass(accountId?: string): Promise<{ passCode: string;
   const passCode = await consumePassCode();
   const pass = await prisma.pass.create({
     data: {
+      stallingProfileId: settings.stallingProfileId,
       passCode,
       idType: settings.defaultIdType,
       accountId: accountId ?? null,
@@ -111,6 +117,7 @@ export async function issueBarcode(passId?: string, biketypeId?: number): Promis
   const barcode = await consumeBarcode();
   const bicycle = await prisma.bicycle.create({
     data: {
+      stallingProfileId: settings.stallingProfileId,
       barcode,
       biketypeId: biketypeId ?? settings.defaultBiketypeId,
       passId: passId ?? null,
@@ -124,6 +131,7 @@ export async function issueBarcodedBicycle(biketypeId?: number): Promise<{ barco
   const barcode = await consumeBarcode();
   const bicycle = await prisma.bicycle.create({
     data: {
+      stallingProfileId: settings.stallingProfileId,
       barcode,
       biketypeId: biketypeId ?? settings.defaultBiketypeId,
     },

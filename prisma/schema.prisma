@@ -10,14 +10,26 @@ datasource db {
 model AppSettings {
   id                      String   @id @default("default")
   fmsBaseUrl              String   @default("http://localhost:3000")
-  citycode                String   @default("")
-  locationId              String   @default("")
+  activeStallingProfileId String?
+  activeStallingProfile   StallingProfile? @relation("ActiveStallingProfile", fields: [activeStallingProfileId], references: [id], onDelete: SetNull)
+  occupationMode          String   @default("both") // indirect | direct | both
+  clockOffsetSeconds      Int      @default(0)
+  tariffStepsJson         String   @default("[{\"timespan\":1,\"cost\":0.5,\"unit\":\"hours\"}]")
+  lastFmsBatchAt          DateTime?
+  lastFmsBatchOk          Boolean?
+  lastFmsBatchMessage     String   @default("")
+  updatedAt               DateTime @updatedAt
+}
+
+model StallingProfile {
+  id                      String   @id @default(cuid())
+  label                   String   @default("")
+  citycode                String
+  locationId              String
   dataproviderUsername    String   @default("")
   dataproviderPassword    String   @default("")
   reportingUsername       String   @default("")
   reportingPassword       String   @default("")
-  occupationMode          String   @default("both") // indirect | direct | both
-  clockOffsetSeconds      Int      @default(0)
   passRangeStart          Int      @default(1000)
   passRangeEnd            Int      @default(1999)
   passRangeNext           Int      @default(1000)
@@ -27,11 +39,14 @@ model AppSettings {
   defaultIdType           Int      @default(0)
   defaultBiketypeId       Int      @default(1)
   defaultSectionCapacity  Int      @default(20)
-  tariffStepsJson         String   @default("[{\"timespan\":1,\"cost\":0.5,\"unit\":\"hours\"}]")
-  lastFmsBatchAt          DateTime?
-  lastFmsBatchOk          Boolean?
-  lastFmsBatchMessage     String   @default("")
+  createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
+  visits                  Visit[]
+  bicycles                Bicycle[]
+  passes                  Pass[]
+  activeForAppSettings    AppSettings[] @relation("ActiveStallingProfile")
+
+  @@unique([citycode, locationId])
 }
 
 model MetadataCache {
@@ -50,19 +65,25 @@ model Account {
 }
 
 model Pass {
-  id          String   @id @default(cuid())
-  accountId   String?
-  account     Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
-  passCode    String   @unique
+  id                String          @id @default(cuid())
+  stallingProfileId String
+  stallingProfile   StallingProfile @relation(fields: [stallingProfileId], references: [id], onDelete: Restrict)
+  accountId         String?
+  account           Account?        @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  passCode          String
   idType      Int      @default(0)
   createdAt   DateTime @default(now())
   bicycles    Bicycle[]
   visits      Visit[]
+
+  @@unique([stallingProfileId, passCode])
 }
 
 model Bicycle {
-  id                 String   @id @default(cuid())
-  barcode            String   @unique
+  id                 String          @id @default(cuid())
+  stallingProfileId  String
+  stallingProfile    StallingProfile @relation(fields: [stallingProfileId], references: [id], onDelete: Restrict)
+  barcode            String
   biketypeId         Int      @default(1)
   passId             String?
   pass               Pass?    @relation(fields: [passId], references: [id], onDelete: SetNull)
@@ -74,10 +95,14 @@ model Bicycle {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   visits             Visit[]
+
+  @@unique([stallingProfileId, barcode])
 }
 
 model Visit {
-  id                      String    @id @default(cuid())
+  id                      String          @id @default(cuid())
+  stallingProfileId       String
+  stallingProfile         StallingProfile @relation(fields: [stallingProfileId], references: [id], onDelete: Restrict)
   externalTransactionId   String    @unique
   passId                  String?
   pass                    Pass?     @relation(fields: [passId], references: [id], onDelete: SetNull)
@@ -89,6 +114,8 @@ model Visit {
   fmsSectionId            String   @default("")
   physicallyPresent       Boolean  @default(true)
   idcode                  String
+  /** Barcode gekoppeld aan sleutelhanger (idcode) voor deze open inventaris-periode */
+  inventoryBarcode        String?
   idType                  Int       @default(0)
   biketypeId              Int       @default(1)
   checkInDate             DateTime
@@ -100,6 +127,9 @@ model Visit {
   paymentMethod           String?   // saldo | cash | pin | subscription
   subscriptionWaived      Boolean   @default(false)
   status                  String    @default("open") // open | closed
+  fmsSyncStatus           String    @default("pending") // pending | synced | failed
+  fmsSyncAt               DateTime?
+  fmsSyncMessage          String?
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
   fmsLogs                 FmsLog[]
@@ -109,6 +139,8 @@ model FmsLog {
   id           String   @id @default(cuid())
   visitId      String?
   visit        Visit?   @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  callType     String   @default("unknown")
+  ok           Boolean  @default(false)
   method       String
   path         String
   requestBody  Json
@@ -116,4 +148,7 @@ model FmsLog {
   responseBody Json?
   error        String?
   createdAt    DateTime @default(now())
+
+  @@index([createdAt(sort: Desc)])
+  @@index([visitId, createdAt(sort: Asc)])
 }

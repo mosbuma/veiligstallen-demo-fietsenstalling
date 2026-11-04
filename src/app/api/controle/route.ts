@@ -30,7 +30,7 @@ export async function POST(req: Request) {
       if (!result.ok) {
         return NextResponse.json({ ok: false, message: result.message }, { status: 400 });
       }
-      return NextResponse.json({ ok: true, ...result });
+      return NextResponse.json(result);
     }
 
     if (action === "finish") {
@@ -39,7 +39,7 @@ export async function POST(req: Request) {
         scannedBarcodes: (body.scannedBarcodes ?? []) as string[],
         unexpectedBarcodes: (body.unexpectedBarcodes ?? []) as string[],
       });
-      return NextResponse.json({ ok: result.ok, ...result });
+      return NextResponse.json(result);
     }
 
     return NextResponse.json({ ok: false, message: "Onbekende actie" }, { status: 400 });

@@ -13,8 +13,6 @@ const links = [
   { href: "/check", label: "Check" },
   { href: "/periferie", label: "Periferie" },
   { href: "/instellingen", label: "Klok" },
-  { href: "/scherm/vrije-plekken", label: "Scherm vrije plekken" },
-  { href: "/scherm/verwijssysteem", label: "Scherm verwijzing" },
 ];
 
 export function AppNav() {

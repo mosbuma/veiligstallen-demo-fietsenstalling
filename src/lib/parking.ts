@@ -2,6 +2,7 @@ import { sectionAccepts, type SectionParkingMeta } from "@/lib/biketype-stalling
 import { prisma } from "@/lib/db";
 import { getMetadataBundle } from "@/lib/fms/metadata-cache";
 import { getSettings } from "@/lib/settings";
+import { activeStallingScope } from "@/lib/stalling-scope";
 
 export const OTHER_SECTION_ID = "OTHER";
 export type { SectionParkingMeta } from "@/lib/biketype-stalling";
@@ -60,9 +61,11 @@ export async function assignParking(
   const sections = parseSectionsForParking(bundle.sections.json, settings.defaultSectionCapacity);
   const fallbackFms = sections[0]?.sectionid ?? "";
 
+  const scope = await activeStallingScope();
   const [visitSlots, bikeSlots] = await Promise.all([
     prisma.visit.findMany({
       where: {
+        ...scope,
         status: "open",
         physicallyPresent: true,
         placementKind: "assigned",
@@ -72,6 +75,7 @@ export async function assignParking(
     }),
     prisma.bicycle.findMany({
       where: {
+        ...scope,
         floorPresent: true,
         floorPlacementKind: "assigned",
         ...(opts?.excludeBicycleId ? { id: { not: opts.excludeBicycleId } } : {}),

@@ -3,16 +3,21 @@ import { createAccount, issueBarcodedBicycle, issuePass, PoolExhaustedError } fr
 import { credentialsFromSettings, postSaldo, postSubscription } from "@/lib/fms/client";
 import { appNow, getSettings } from "@/lib/settings";
 import { prisma } from "@/lib/db";
+import { activeStallingScope } from "@/lib/stalling-scope";
 import { NextResponse } from "next/server";
 
 export async function GET() {
+  const scope = await activeStallingScope();
   const [accounts, passes, bicycles, parkedMap, openVisits] = await Promise.all([
-    prisma.account.findMany({ include: { passes: true }, orderBy: { createdAt: "desc" } }),
-    prisma.pass.findMany({ orderBy: { createdAt: "desc" }, take: 500 }),
-    prisma.bicycle.findMany({ orderBy: { createdAt: "desc" }, take: 500 }),
+    prisma.account.findMany({
+      include: { passes: { where: scope } },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.pass.findMany({ where: scope, orderBy: { createdAt: "desc" }, take: 500 }),
+    prisma.bicycle.findMany({ where: scope, orderBy: { createdAt: "desc" }, take: 500 }),
     bicycleParkedMap(),
     prisma.visit.findMany({
-      where: { status: "open", bicycleId: { not: null } },
+      where: { ...scope, status: "open", bicycleId: { not: null } },
       select: { bicycleId: true, physicallyPresent: true, placementKind: true },
     }),
   ]);

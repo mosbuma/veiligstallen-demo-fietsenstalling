@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/db";
+import { activeStallingScope, findBicycleByBarcode } from "@/lib/stalling-scope";
 import { controleCheckInUnexpected, controleCheckoutMissing } from "@/lib/visits";
+import { fmsSyncNeedsResync } from "@/lib/visit-fms-sync-state";
 
 export type ControleScanResult =
   | { ok: true; effect: "inventory_found"; visitId: string; barcode: string }
@@ -22,8 +24,9 @@ export function isPhysicallyInStalling(
 
 /** Snapshot at controle start: all open stalling-inventaris visit ids. */
 export async function controleInventoryVisitIds(): Promise<string[]> {
+  const scope = await activeStallingScope();
   const visits = await prisma.visit.findMany({
-    where: { status: "open", bicycleId: { not: null } },
+    where: { ...scope, status: "open", bicycleId: { not: null } },
     select: { id: true },
   });
   return visits.map((v) => v.id);
@@ -47,11 +50,12 @@ export async function controleScanBarcode(input: {
     return { ok: true, effect: "already_scanned", barcode: bc };
   }
 
+  const scope = await activeStallingScope();
   const visit = await prisma.visit.findFirst({
-    where: { status: "open", bicycle: { barcode: bc } },
+    where: { ...scope, status: "open", bicycle: { barcode: bc } },
     include: { bicycle: true },
   });
-  const bicycle = visit?.bicycle ?? (await prisma.bicycle.findUnique({ where: { barcode: bc } }));
+  const bicycle = visit?.bicycle ?? (await findBicycleByBarcode(bc));
 
   if (!isPhysicallyInStalling(bicycle, visit)) {
     return { ok: false, message: NOT_PHYSICALLY_IN_STALLING };
@@ -123,12 +127,13 @@ export async function finishWilmarControle(input: {
   for (const bc of input.unexpectedBarcodes) {
     if (!input.scannedBarcodes.includes(bc)) continue;
     try {
+      const scope = await activeStallingScope();
       const open = await prisma.visit.findFirst({
-        where: { status: "open", bicycle: { barcode: bc } },
+        where: { ...scope, status: "open", bicycle: { barcode: bc } },
       });
       if (open) continue;
 
-      let bicycle = await prisma.bicycle.findUnique({ where: { barcode: bc } });
+      let bicycle = await findBicycleByBarcode(bc);
       if (!bicycle) {
         errors.push(`Onverwachte scan ${bc}: geen fiets in systeem`);
         continue;
@@ -146,8 +151,9 @@ export async function finishWilmarControle(input: {
   }
 
   // Touch floor rows so batch occupation sync can pick up controle scans (no direct FMS).
+  const scope = await activeStallingScope();
   await prisma.bicycle.updateMany({
-    where: { floorPresent: true },
+    where: { ...scope, floorPresent: true },
     data: { updatedAt: new Date() },
   });
 

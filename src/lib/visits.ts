@@ -1,8 +1,14 @@
 import { prisma } from "@/lib/db";
-import { getProtectedReads } from "@/lib/fms/metadata-cache";
+import { getProtectedReadsCached } from "@/lib/fms/metadata-cache";
 import { countFloorAssigned, countFloorVirtual } from "@/lib/real-world";
 import { assignParking, fmsSectionIdForVisit, OTHER_SECTION_ID, type ParkingAssignment } from "@/lib/parking";
 import { appNow, getSettings } from "@/lib/settings";
+import {
+  activeStallingScope,
+  findBicycleByBarcode,
+  findPassByCode,
+} from "@/lib/stalling-scope";
+import { fmsSyncNeedsResync } from "@/lib/visit-fms-sync-state";
 import { displayPassCode, isSyntheticPassCode, visitKnownAtBalie } from "@/lib/pass-display";
 import { calculateTransactionCost, stallingsduurMinutes } from "@/lib/tariff";
 import { Decimal } from "@prisma/client/runtime/library";
@@ -56,20 +62,22 @@ export async function checkIn(input: {
   const now = appNow(settings);
   const externalTransactionId = generateExternalTransactionId();
 
-  let pass = await prisma.pass.findUnique({ where: { passCode: input.passCode } });
+  let pass = await findPassByCode(input.passCode);
   if (!pass) {
     pass = await prisma.pass.create({
       data: {
+        stallingProfileId: settings.stallingProfileId,
         passCode: input.passCode,
         idType: input.idType ?? settings.defaultIdType,
       },
     });
   }
 
-  let bicycle = await prisma.bicycle.findUnique({ where: { barcode: input.barcode } });
+  let bicycle = await findBicycleByBarcode(input.barcode);
   if (!bicycle) {
     bicycle = await prisma.bicycle.create({
       data: {
+        stallingProfileId: settings.stallingProfileId,
         barcode: input.barcode,
         biketypeId: input.biketypeId,
         passId: pass.id,
@@ -82,9 +90,11 @@ export async function checkIn(input: {
     });
   }
 
+  const scope = await activeStallingScope();
   if (!isSyntheticPassCode(input.passCode)) {
     const otherOnPass = await prisma.visit.findFirst({
       where: {
+        ...scope,
         status: "open",
         idcode: input.passCode,
         NOT: { bicycleId: bicycle.id },
@@ -100,7 +110,7 @@ export async function checkIn(input: {
   }
 
   const openVisit = await prisma.visit.findFirst({
-    where: { bicycleId: bicycle.id, status: "open" },
+    where: { ...scope, bicycleId: bicycle.id, status: "open" },
   });
 
   if (
@@ -140,7 +150,9 @@ export async function checkIn(input: {
       where: { id: openVisit.id },
       data: {
         ...parkingToVisitFields(parking),
+        ...fmsSyncNeedsResync(),
         idcode: input.passCode,
+        inventoryBarcode: input.barcode,
         passId: pass.id,
         biketypeId: input.biketypeId,
         idType: input.idType ?? pass.idType,
@@ -150,16 +162,19 @@ export async function checkIn(input: {
   } else {
     visit = await prisma.visit.create({
       data: {
+        stallingProfileId: settings.stallingProfileId,
         externalTransactionId,
         passId: pass.id,
         bicycleId: bicycle.id,
         ...parkingToVisitFields(parking),
         idcode: input.passCode,
+        inventoryBarcode: input.barcode,
         idType: input.idType ?? pass.idType,
         biketypeId: input.biketypeId,
         checkInDate: now,
         checkInType: input.checkInType ?? "user",
         status: "open",
+        ...fmsSyncNeedsResync(),
       },
     });
   }
@@ -176,7 +191,10 @@ async function subscriptionCoversPass(
   biketypeId: number
 ): Promise<boolean> {
   try {
-    const { subscriptions } = await getProtectedReads();
+    // Do not call VeiligStallen on checkout/check-in — use 5-min cache only (see getProtectedReads).
+    const cached = await getProtectedReadsCached();
+    if (!cached) return false;
+    const { subscriptions } = cached;
     if (!Array.isArray(subscriptions)) return false;
     for (const sub of subscriptions) {
       const row = sub as Record<string, unknown>;
@@ -204,7 +222,7 @@ export async function checkOut(input: {
     where: { id: input.visitId },
     include: { bicycle: true, pass: true },
   });
-  if (!visit || visit.status !== "open") {
+  if (!visit || visit.status !== "open" || visit.stallingProfileId !== settings.stallingProfileId) {
     throw new Error("Geen open bezoek gevonden");
   }
   const fmsSection = fmsSectionIdForVisit(visit);
@@ -226,6 +244,7 @@ export async function checkOut(input: {
     const closed = await tx.visit.update({
       where: { id: visit.id },
       data: {
+        ...fmsSyncNeedsResync(),
         checkOutDate: now,
         checkOutType: input.checkOutType ?? "user",
         stallingsduur: duur,
@@ -234,6 +253,7 @@ export async function checkOut(input: {
         subscriptionWaived: waived,
         status: "closed",
         physicallyPresent: false,
+        inventoryBarcode: null,
       },
     });
     if (bicycleId) {
@@ -263,7 +283,7 @@ export async function controleCheckoutMissing(visitId: string) {
     where: { id: visitId },
     include: { bicycle: true },
   });
-  if (!visit || visit.status !== "open") {
+  if (!visit || visit.status !== "open" || visit.stallingProfileId !== settings.stallingProfileId) {
     throw new Error("Geen open bezoek gevonden");
   }
 
@@ -299,6 +319,7 @@ export async function controleCheckoutMissing(visitId: string) {
     const closed = await tx.visit.update({
       where: { id: visit.id },
       data: {
+        ...fmsSyncNeedsResync(),
         checkOutDate: now,
         checkOutType: "controle",
         stallingsduur: duur,
@@ -307,6 +328,7 @@ export async function controleCheckoutMissing(visitId: string) {
         subscriptionWaived: waived,
         status: "closed",
         physicallyPresent: false,
+        inventoryBarcode: null,
       },
     });
     if (visit.bicycleId && floorKeep) {
@@ -340,7 +362,8 @@ export async function syncOccupationInventory(
 ) {
   void sectionId;
   void bikes;
-  await prisma.bicycle.updateMany({ data: { updatedAt: new Date() } });
+  const scope = await activeStallingScope();
+  await prisma.bicycle.updateMany({ where: scope, data: { updatedAt: new Date() } });
   return { ok: true, status: 200, localOnly: true as const };
 }
 

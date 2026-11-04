@@ -58,6 +58,16 @@ async function fetchBundle(settings: Awaited<ReturnType<typeof getSettings>>) {
   return { location, sections, biketypes, subscriptionTypes, settings };
 }
 
+/** Cached subscriptions/balances only — no HTTP (safe for hot paths like checkout). */
+export async function getProtectedReadsCached(): Promise<{
+  balances: unknown;
+  subscriptions: unknown;
+} | null> {
+  const settings = await getSettings();
+  const key = `protected:${settings.citycode}:${settings.locationId}`;
+  return getCached(key);
+}
+
 export async function getProtectedReads(force = false) {
   const settings = await getSettings();
   const creds = credentialsFromSettings(settings);
@@ -73,6 +83,20 @@ export async function getProtectedReads(force = false) {
   const payload = { balances: balances.json, subscriptions: subscriptions.json };
   if (balances.ok) await setCached(key, payload);
   return payload;
+}
+
+/** Human-readable stalling name from cached/FMS location metadata. */
+export async function getStallingDisplayName(): Promise<string> {
+  try {
+    const bundle = await getMetadataBundle(false);
+    const loc = bundle.location.json as Record<string, unknown>;
+    const name = String(loc?.name ?? loc?.title ?? loc?.locationname ?? "").trim();
+    if (name && bundle.location.ok) return name;
+  } catch {
+    /* fall through */
+  }
+  const settings = await getSettings();
+  return settings.locationId.trim();
 }
 
 export function parseSections(sectionsJson: unknown): SectionSummary[] {

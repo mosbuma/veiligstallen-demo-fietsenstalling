@@ -34,3 +34,5 @@ Open [http://localhost:3077/aansluiten](http://localhost:3077/aansluiten). **Aan
 Reference VeiligStallen code lives under `reference/` (read-only).
 
 See [docs/plan-buiten-en-pools.md](docs/plan-buiten-en-pools.md) for the **Buiten** panel, local ID pools, and administratie split.
+
+See [docs/plan-fms-sync.md](docs/plan-fms-sync.md) for FMS sync behavior, **test coverage vs** [reference/endpoints-veiligstallen.md](reference/endpoints-veiligstallen.md), and the planned **link/unlink bike to pass** action (`saveJsonBike`).

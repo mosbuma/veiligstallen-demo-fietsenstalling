@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { testFmsDataproviderLogin, testReportingLogin } from "@/lib/aansluiten-login";
 import { reportingCredentialsFromSettings, reportingFetch } from "@/lib/fms/client";
 import { getSettings } from "@/lib/settings";
+import { activeStallingScope } from "@/lib/stalling-scope";
 
 export type LoginCheck = { ok: boolean; status: number; message: string };
 
@@ -41,8 +42,10 @@ export async function runRoundTrip(from: Date, to: Date) {
     `&startDate=${encodeURIComponent(fromStr)}&endDate=${encodeURIComponent(toStr)}&depth=2`;
   const dynRes = await reportingFetch(creds, dynPath);
 
+  const scope = await activeStallingScope();
   const localVisits = await prisma.visit.findMany({
     where: {
+      ...scope,
       status: "closed",
       checkOutDate: { gte: from, lte: to },
     },

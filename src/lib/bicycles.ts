@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { isSyntheticPassCode } from "@/lib/pass-display";
+import { activeStallingScope } from "@/lib/stalling-scope";
 
 function mapBicycleRow(b: {
   id: string;
@@ -30,13 +31,15 @@ function mapBicycleRow(b: {
 
 /** Buiten: not on stalling floor; includes inventaris zonder fysieke aanwezigheid. */
 export async function listBuitenBicycles() {
+  const scope = await activeStallingScope();
   const [bicycles, openVisits] = await Promise.all([
     prisma.bicycle.findMany({
+      where: scope,
       orderBy: { createdAt: "desc" },
       include: { pass: { select: { passCode: true } } },
     }),
     prisma.visit.findMany({
-      where: { status: "open", bicycleId: { not: null } },
+      where: { ...scope, status: "open", bicycleId: { not: null } },
       select: { id: true, bicycleId: true, physicallyPresent: true, idcode: true },
     }),
   ]);
@@ -74,14 +77,15 @@ export async function listBuitenBicycles() {
 
 /** Binnen op vloer zonder open stalling-inventaris (plaats zonder scan). */
 export async function listStallingFloorOnlyBicycles() {
+  const scope = await activeStallingScope();
   const [bicycles, openVisits] = await Promise.all([
     prisma.bicycle.findMany({
-      where: { floorPresent: true },
+      where: { ...scope, floorPresent: true },
       orderBy: [{ floorSectionId: "asc" }, { floorStallPlace: "asc" }],
       include: { pass: { select: { passCode: true } } },
     }),
     prisma.visit.findMany({
-      where: { status: "open", bicycleId: { not: null } },
+      where: { ...scope, status: "open", bicycleId: { not: null } },
       select: { bicycleId: true },
     }),
   ]);
@@ -97,13 +101,14 @@ export async function listRealWorldBicycles() {
 }
 
 export async function bicycleParkedMap(): Promise<Map<string, boolean>> {
+  const scope = await activeStallingScope();
   const [openVisits, floorOnly] = await Promise.all([
     prisma.visit.findMany({
-      where: { status: "open", bicycleId: { not: null }, physicallyPresent: true },
+      where: { ...scope, status: "open", bicycleId: { not: null }, physicallyPresent: true },
       select: { bicycleId: true },
     }),
     prisma.bicycle.findMany({
-      where: { floorPresent: true },
+      where: { ...scope, floorPresent: true },
       select: { id: true },
     }),
   ]);

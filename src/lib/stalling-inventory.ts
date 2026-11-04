@@ -9,9 +9,18 @@ export type StallingVisit = {
   physicallyPresent: boolean;
   placementKind: string;
   idcode: string;
+  inventoryBarcode?: string | null;
   biketypeId: number;
   bicycle?: { barcode: string | null };
 };
+
+/** Barcode shown in inventaris: explicit visit link, else fiets-record. */
+export function inventarisBarcode(v: {
+  inventoryBarcode?: string | null;
+  bicycle?: { barcode: string | null } | null;
+}): string {
+  return v.inventoryBarcode?.trim() || v.bicycle?.barcode?.trim() || "";
+}
 
 export type StallingFloorBike = {
   id: string;
@@ -45,7 +54,7 @@ export function buildStallingRows(
 ): StallingRow[] {
   const rows: StallingRow[] = [];
   for (const v of openVisits) {
-    rows.push({ kind: "visit", barcode: v.bicycle?.barcode ?? "", visit: v });
+    rows.push({ kind: "visit", barcode: inventarisBarcode(v), visit: v });
   }
   for (const b of floorOnly) {
     rows.push({ kind: "floor", barcode: b.barcode, bike: b });

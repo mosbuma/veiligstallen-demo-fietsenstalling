@@ -2,6 +2,11 @@ import { prisma } from "@/lib/db";
 import { credentialsFromSettings, postOccupation } from "@/lib/fms/client";
 import { assignParking, OTHER_SECTION_ID } from "@/lib/parking";
 import { appNow, getSettings } from "@/lib/settings";
+import {
+  activeStallingScope,
+  findBicycleByBarcode,
+} from "@/lib/stalling-scope";
+import { fmsSyncNeedsResync } from "@/lib/visit-fms-sync-state";
 
 export type FloorState = {
   floorPresent: boolean;
@@ -20,14 +25,16 @@ export function fmsSectionForFloor(b: FloorState): string {
 
 /** Lumiguide: assigned slots occupied in the real world (any cause). */
 export async function countFloorAssigned(): Promise<number> {
+  const scope = await activeStallingScope();
   return prisma.bicycle.count({
-    where: { floorPresent: true, floorPlacementKind: "assigned" },
+    where: { ...scope, floorPresent: true, floorPlacementKind: "assigned" },
   });
 }
 
 export async function countFloorVirtual(): Promise<number> {
+  const scope = await activeStallingScope();
   return prisma.bicycle.count({
-    where: { floorPresent: true, floorPlacementKind: "other" },
+    where: { ...scope, floorPresent: true, floorPlacementKind: "other" },
   });
 }
 
@@ -83,17 +90,23 @@ export async function clearBicycleFloor(bicycleId: string) {
 
 /** Plaats zonder scan: fysieke plek; open inventaris (buiten, niet op vloer) wordt mee bijgewerkt. */
 export async function placeOnFloorWithoutScan(input: { barcode: string; biketypeId: number }) {
-  let bicycle = await prisma.bicycle.findUnique({ where: { barcode: input.barcode } });
+  const settings = await getSettings();
+  const scope = await activeStallingScope();
+  let bicycle = await findBicycleByBarcode(input.barcode);
   if (!bicycle) {
     bicycle = await prisma.bicycle.create({
-      data: { barcode: input.barcode, biketypeId: input.biketypeId },
+      data: {
+        stallingProfileId: settings.stallingProfileId,
+        barcode: input.barcode,
+        biketypeId: input.biketypeId,
+      },
     });
   } else if (bicycle.floorPresent) {
     throw new Error(`Barcode ${input.barcode} staat al op een plek (echte wereld). Eerst verwijderen zonder scan.`);
   }
 
   const openVisit = await prisma.visit.findFirst({
-    where: { bicycleId: bicycle.id, status: "open" },
+    where: { ...scope, bicycleId: bicycle.id, status: "open" },
   });
 
   const parking = await assignParking(input.biketypeId, {
@@ -110,6 +123,7 @@ export async function placeOnFloorWithoutScan(input: { barcode: string; biketype
     await prisma.visit.update({
       where: { id: openVisit.id },
       data: {
+        ...fmsSyncNeedsResync(),
         sectionId: parking.sectionId,
         stallPlace: parking.stallPlace,
         placementKind: parking.placementKind,
@@ -125,6 +139,7 @@ export async function placeOnFloorWithoutScan(input: { barcode: string; biketype
 
 /** Verwijder zonder scan: clears physical floor; open inventaris blijft (niet fysiek aanwezig). */
 export async function removeFromFloorWithoutScan(input: { barcode?: string; visitId?: string }) {
+  const settings = await getSettings();
   let bicycle = null as Awaited<ReturnType<typeof prisma.bicycle.findUnique>>;
 
   if (input.visitId) {
@@ -132,10 +147,12 @@ export async function removeFromFloorWithoutScan(input: { barcode?: string; visi
       where: { id: input.visitId },
       include: { bicycle: true },
     });
-    if (!visit?.bicycle) throw new Error("Geen fiets bij dit bezoek");
+    if (!visit?.bicycle || visit.stallingProfileId !== settings.stallingProfileId) {
+      throw new Error("Geen fiets bij dit bezoek");
+    }
     bicycle = visit.bicycle;
   } else if (input.barcode) {
-    bicycle = await prisma.bicycle.findUnique({ where: { barcode: input.barcode } });
+    bicycle = await findBicycleByBarcode(input.barcode);
   }
   if (!bicycle) throw new Error("Geen fiets gevonden");
   if (!bicycle.floorPresent) throw new Error("Fiets staat niet op de stallingvloer (echte wereld)");
@@ -143,13 +160,14 @@ export async function removeFromFloorWithoutScan(input: { barcode?: string; visi
   const prevSection = fmsSectionForFloor(bicycle);
   await clearBicycleFloor(bicycle.id);
 
+  const scope = await activeStallingScope();
   const openVisit = await prisma.visit.findFirst({
-    where: { bicycleId: bicycle.id, status: "open" },
+    where: { ...scope, bicycleId: bicycle.id, status: "open" },
   });
   if (openVisit) {
     await prisma.visit.update({
       where: { id: openVisit.id },
-      data: { physicallyPresent: false },
+      data: { ...fmsSyncNeedsResync(), physicallyPresent: false },
     });
   }
 

@@ -1,8 +1,9 @@
 "use client";
 
+import { BalieDisplayEmbeds } from "@/components/BalieDisplayEmbeds";
 import { StallingInventoryTable } from "@/components/StallingInventoryTable";
 import { useMetadata } from "@/components/MetadataLoader";
-import { isSyntheticPassCode } from "@/lib/pass-display";
+import { isSyntheticPassCode, passCodeForInput } from "@/lib/pass-display";
 import { stallingHandlesBiketype } from "@/lib/biketype-stalling";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -47,7 +48,7 @@ function readBalieRandomPassPref(): boolean {
 }
 
 export default function BaliePage() {
-  const { biketypes, parkingSections, locationName, loading, error } = useMetadata();
+  const { biketypes, parkingSections, loading, error } = useMetadata();
   const [passCode, setPassCode] = useState("");
   const [barcode, setBarcode] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -181,9 +182,11 @@ export default function BaliePage() {
   const showGeenPasBeschikbaar = randomPass && !validPassEntered;
   const highlightSleutelhanger = hasBarcode && !validPassEntered;
   const showCheckIn = validPassEntered && hasBarcode && !activeOpenVisit;
-  const showCheckOut = validPassEntered && hasBarcode && Boolean(activeOpenVisit);
+  /** Uitchecken: gescande fiets met open bezoek — geen pas in pool / pasveld nodig. */
+  const showCheckOut = hasBarcode && Boolean(activeOpenVisit);
   const showPlaats = validPassEntered && hasBarcode && !onPhysicalFloor;
   const showVerwijder = validPassEntered && hasBarcode && onPhysicalFloor;
+  const showBarcodePanel = hasBarcode && (validPassEntered || Boolean(activeOpenVisit));
 
   const passPoolCanIssue = !passPoolEmpty;
 
@@ -333,6 +336,8 @@ export default function BaliePage() {
 
   const selectInsideVisit = (visit: Visit) => {
     setBarcode(visit.bicycle?.barcode ?? "");
+    const fromVisit = passCodeForInput(visit.idcode);
+    if (fromVisit) setPassCode(fromVisit);
   };
 
   const selectFloorOnlyBike = (bike: OutsideBike) => {
@@ -340,7 +345,8 @@ export default function BaliePage() {
   };
 
   return (
-    <div className="grid gap-4 xl:grid-cols-12">
+    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+      <div className="grid min-w-0 flex-1 gap-4 xl:grid-cols-12">
       <div className="card space-y-3 xl:col-span-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-bold">Buiten ({outsideBikes.length})</h2>
@@ -485,7 +491,6 @@ export default function BaliePage() {
         <h2 className="text-lg font-bold">Balie — scan in / uit</h2>
         {loading && <p className="text-sm text-gray-500">Metadata laden…</p>}
         {error && <p className="text-sm text-red-700">{error}</p>}
-        {locationName && <p className="text-sm">Stalling: {locationName}</p>}
 
         <div className="space-y-4">
           <section
@@ -546,9 +551,14 @@ export default function BaliePage() {
             </label>
           </section>
 
-          {validPassEntered && (
+          {showBarcodePanel && (
             <section className="space-y-3 rounded-lg border border-[var(--border)] bg-white/60 p-3">
               <h3 className="text-sm font-bold text-[var(--accent)]">Barcode Fiets</h3>
+              {showCheckOut && !validPassEntered && (
+                <p className="text-xs text-gray-600">
+                  Open bezoek geselecteerd — uitchecken kan zonder pas in te voeren.
+                </p>
+              )}
 
               {scanTypeNotAllowed && (
                 <div className="rounded bg-red-600 px-3 py-2 text-sm font-semibold text-white">
@@ -643,6 +653,8 @@ export default function BaliePage() {
           }}
         />
       </div>
+      </div>
+      <BalieDisplayEmbeds />
     </div>
   );
 }

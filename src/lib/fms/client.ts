@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { FMS_CALL_TYPES } from "@/lib/fms-log-types";
 import type { AppSettingsDto } from "@/lib/settings";
 
 export type FmsCredentials = {
@@ -27,10 +28,14 @@ function basicAuth(username: string, password: string): string {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 }
 
-function buildUrl(baseUrl: string, path: string): string {
+export function fmsFullUrl(baseUrl: string, path: string): string {
   const base = baseUrl.replace(/\/$/, "");
   const p = path.startsWith("/") ? path : `/${path}`;
   return `${base}${p}`;
+}
+
+function buildUrl(baseUrl: string, path: string): string {
+  return fmsFullUrl(baseUrl, path);
 }
 
 export type FmsCallResult = {
@@ -39,6 +44,19 @@ export type FmsCallResult = {
   json: unknown;
   text: string;
 };
+
+/** Human-readable FMS error from a failed call (for UI / batch summary). */
+export function fmsResultErrorMessage(result: FmsCallResult): string {
+  if (result.ok) return "";
+  if (typeof result.json === "object" && result.json != null) {
+    const j = result.json as Record<string, unknown>;
+    if (typeof j.message === "string" && j.message.trim()) return j.message.trim();
+    if (typeof j.error === "string" && j.error.trim()) return j.error.trim();
+  }
+  const t = result.text.trim();
+  if (t && t.length < 500) return t;
+  return result.status ? `HTTP ${result.status}` : "Onbekende fout";
+}
 
 export async function fmsFetch(
   creds: FmsCredentials,
@@ -79,6 +97,7 @@ export async function fmsFetch(
 
 export async function logFmsCall(input: {
   visitId?: string;
+  callType: string;
   method: string;
   path: string;
   requestBody: unknown;
@@ -92,21 +111,74 @@ export async function logFmsCall(input: {
           "message" in input.result.json
         ? String((input.result.json as { message?: string }).message)
         : input.result.text.slice(0, 500);
-  await prisma.fmsLog.create({
-    data: {
-      visitId: input.visitId,
-      method: input.method,
-      path: input.path,
-      requestBody: input.requestBody as object,
-      statusCode: input.result.status,
-      responseBody: input.result.json as object,
-      error: err,
-    },
-  });
+  try {
+    await prisma.fmsLog.create({
+      data: {
+        ...(input.visitId ? { visitId: input.visitId } : {}),
+        callType: input.callType,
+        ok: input.result.ok,
+        method: input.method,
+        path: input.path,
+        requestBody: input.requestBody as object,
+        statusCode: input.result.status,
+        responseBody: (input.result.json ?? undefined) as object | undefined,
+        error: err,
+      },
+    });
+  } catch (e) {
+    console.error("FmsLog create failed (run prisma migrate deploy && prisma generate):", e);
+  }
 }
 
 export function v4LocationPath(citycode: string, locationid: string, suffix = ""): string {
   return `/api/fms/v4/citycodes/${encodeURIComponent(citycode)}/locations/${encodeURIComponent(locationid)}${suffix}`;
+}
+
+/** FMS v4 batch limit (all-or-nothing per request). */
+export const FMS_MANAGED_TRANSACTIONS_BATCH_MAX = 50;
+
+/** Batch at bikepark level (legacy); prefer section-scoped batch to match single MT POST. */
+export async function postManagedTransactionsBatch(
+  creds: FmsCredentials,
+  citycode: string,
+  locationid: string,
+  managedtransactions: Record<string, unknown>[]
+): Promise<FmsCallResult> {
+  const path = v4LocationPath(citycode, locationid, "/managedtransactions");
+  const body = { managedtransactions };
+  const result = await fmsFetch(creds, "POST", path, body);
+  await logFmsCall({
+    callType: FMS_CALL_TYPES.uploadJsonTransactions,
+    method: "POST",
+    path,
+    requestBody: body,
+    result,
+  });
+  return result;
+}
+
+export async function postManagedTransactionsBatchForSection(
+  creds: FmsCredentials,
+  citycode: string,
+  locationid: string,
+  sectionid: string,
+  managedtransactions: Record<string, unknown>[]
+): Promise<FmsCallResult> {
+  const path = v4LocationPath(
+    citycode,
+    locationid,
+    `/sections/${encodeURIComponent(sectionid)}/managedtransactions`
+  );
+  const body = { managedtransactions };
+  const result = await fmsFetch(creds, "POST", path, body);
+  await logFmsCall({
+    callType: FMS_CALL_TYPES.uploadJsonTransactions,
+    method: "POST",
+    path,
+    requestBody: body,
+    result,
+  });
+  return result;
 }
 
 export async function postManagedTransaction(
@@ -124,7 +196,14 @@ export async function postManagedTransaction(
   );
   const body = { managedtransaction: managed };
   const result = await fmsFetch(creds, "POST", path, body);
-  await logFmsCall({ visitId, method: "POST", path, requestBody: body, result });
+  await logFmsCall({
+    visitId,
+    callType: FMS_CALL_TYPES.uploadJsonTransaction,
+    method: "POST",
+    path,
+    requestBody: body,
+    result,
+  });
   return result;
 }
 
@@ -143,7 +222,14 @@ export async function postOccupation(
   );
   const body = { data };
   const result = await fmsFetch(creds, "POST", path, body);
-  await logFmsCall({ visitId, method: "POST", path, requestBody: body, result });
+  await logFmsCall({
+    visitId,
+    callType: FMS_CALL_TYPES.updateOccupation,
+    method: "POST",
+    path,
+    requestBody: body,
+    result,
+  });
   return result;
 }
 
@@ -163,7 +249,14 @@ export async function postSaveBike(
   );
   const body = { bike };
   const result = await fmsFetch(creds, "POST", path, body);
-  await logFmsCall({ visitId, method: "POST", path, requestBody: body, result });
+  await logFmsCall({
+    visitId,
+    callType: FMS_CALL_TYPES.saveJsonBike,
+    method: "POST",
+    path,
+    requestBody: body,
+    result,
+  });
   return result;
 }
 
@@ -182,7 +275,14 @@ export async function postSaldo(
     `/idcodes/${idtype}/${encodeURIComponent(idcode)}/balance`
   );
   const result = await fmsFetch(creds, "POST", path, payload);
-  await logFmsCall({ visitId, method: "POST", path, requestBody: payload, result });
+  await logFmsCall({
+    visitId,
+    callType: FMS_CALL_TYPES.addJsonSaldo,
+    method: "POST",
+    path,
+    requestBody: payload,
+    result,
+  });
   return result;
 }
 
@@ -196,7 +296,14 @@ export async function postSubscription(
   const path = v4LocationPath(citycode, locationid, "/subscriptions");
   const body = { subscription };
   const result = await fmsFetch(creds, "POST", path, body);
-  await logFmsCall({ visitId, method: "POST", path, requestBody: body, result });
+  await logFmsCall({
+    visitId,
+    callType: FMS_CALL_TYPES.addSubscription,
+    method: "POST",
+    path,
+    requestBody: body,
+    result,
+  });
   return result;
 }
 
