@@ -53,7 +53,7 @@ export default function FinancienPage() {
           <thead>
             <tr>
               <th>External TX</th>
-              <th>Pas</th>
+              <th>Sleutelhanger</th>
               <th>Uit</th>
               <th>Duur</th>
               <th>Kosten</th>

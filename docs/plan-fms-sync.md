@@ -25,7 +25,7 @@ De demo is **geen** stallingsbeheer-server: geen `*.wai`-wachtrij, geen SOAP, ge
 | Spec | Limiet in demo |
 | --- | --- |
 | **`addJsonSaldo` na contant/pin** | Productie: FMS trekt bij uitcheck altijd volledige kosten af; server boekt daarna tegoed terug. Demo stuurt **alleen** saldo-POST bij betaling **saldo**, **niet** de positieve correctie na **contant/pin**. Uitcheck contant/pin lokaal + MT-sync wel; FMS-tegoed-flow uit spec niet. |
-| **Controle / inventarisatie → FMS** | **Controle** draait lokaal (Wilmar); FMS krijgt **managed transactions** na sync, geen aparte controle-API. **`syncOccupationInventory`** is stub (alleen `updatedAt` bump voor batch). |
+| **Controle / inventarisatie → FMS** | **Controle afronden** → MT batch + **occupation `data.bikes`** (vloer). **Reset stalling** → system MT + **lege `bikes[]`**. **`occupationMode`** moet `indirect` of `both` (Periferie). **`POST /api/fms-sync`** `inventory-sync` / `inventory-empty`. |
 | **Abonnement = gratis stallen** | Logica leest **`getProtectedReadsCached()`** (subscriptions). **`getProtectedReads()` wordt nergens aangeroepen** — cache blijft leeg tenzij handmatig gevuld. Gratis uitcheck via abonnement is in de app **niet betrouwbaar testbaar** tot periodieke pull (10 min) is aangesloten. |
 | **Sync-timing** | Spec: wachtrij **20 s**; demo: directe HTTP bij knop / **5 min** auto (browser-tab). Geen offline queue. |
 | **Batch vs single MT** | Spec één operatie per wachtrij-item; demo batch (standaard) of **1 transactie per tick** (Aansluiten → sync-modus). |
@@ -77,6 +77,12 @@ Floor **occupation** uses **`updateOccupation`** (no visit id on those log rows)
 1. **Sync-knop / VeiligStallen-pagina** — de foutmelding bevat nu de FMS **`message`** (niet alleen HTTP 400).
 2. **VeiligStallen → VeiligStallen-aanroepen** — open de meest recente regel **`uploadJsonTransactions`** (rood) → tab **Response** (volledige JSON) en **Payload** (alle 30 MT’s in één body). FMS batch is **all-or-nothing**: één ongeldige transactie weigert de hele batch; de response noemt meestal het eerste validatieprobleem (bijv. lege `idcode`, onbekende `checkouttype`).
 3. Corrigeer lokaal of verwijder testdata, daarna opnieuw **Update VeiligStallen**.
+
+## Wilmar-gap-analyse (demo UI)
+
+Tijdelijk tabblad **`/wilmar`**: haalt rapportage-transacties op (`checkin` / `checkout`), telt checkin-/checkout-types, vergelijkt met lokale bezoeken, en toont een catalogus CF-flows t.o.v. demo (o.a. sync-MT, saldo na contant/pin, subscribe/koppel pas). API: `GET /api/wilmar/analysis`.
+
+---
 
 ## Open werk (prioriteit t.o.v. spec)
 

@@ -1,6 +1,17 @@
 import { bicycleParkedMap } from "@/lib/bicycles";
 import { createAccount, issueBarcodedBicycle, issuePass, PoolExhaustedError } from "@/lib/ids";
-import { credentialsFromSettings, postSaldo, postSubscription } from "@/lib/fms/client";
+import {
+  credentialsFromSettings,
+  fmsResultErrorMessage,
+  fmsResultOk,
+  fmsSubscriptionIdFromResult,
+  postSaldo,
+  postSubscription,
+} from "@/lib/fms/client";
+import { linkSubscriptionPass } from "@/lib/fms/link-subscription-pass";
+import { idcodeForFmsApi } from "@/lib/pass-display";
+import { fmsBalanceForIdcode } from "@/lib/fms/balance-read";
+import { getProtectedReads } from "@/lib/fms/metadata-cache";
 import { appNow, getSettings } from "@/lib/settings";
 import { prisma } from "@/lib/db";
 import { activeStallingScope } from "@/lib/stalling-scope";
@@ -39,7 +50,26 @@ export async function GET() {
       location,
     };
   });
-  return NextResponse.json({ accounts, passes, bicycles: bicyclesWithStatus });
+  let balanceRows: unknown = null;
+  try {
+    const reads = await getProtectedReads(true);
+    balanceRows = reads.balances;
+  } catch {
+    balanceRows = null;
+  }
+  const balanceList = Array.isArray(balanceRows)
+    ? balanceRows
+    : balanceRows && typeof balanceRows === "object" && Array.isArray((balanceRows as { data?: unknown }).data)
+      ? (balanceRows as { data: unknown[] }).data
+      : null;
+  const passesWithSaldo = passes.map((pass) => ({
+    ...pass,
+    saldo:
+      balanceList == null
+        ? null
+        : (fmsBalanceForIdcode(balanceList, pass.passCode, pass.idType) ?? 0),
+  }));
+  return NextResponse.json({ accounts, passes: passesWithSaldo, bicycles: bicyclesWithStatus });
 }
 
 export async function POST(req: Request) {
@@ -80,15 +110,64 @@ export async function POST(req: Request) {
       const settings = await getSettings();
       const creds = credentialsFromSettings(settings);
       const now = appNow(settings);
-      const res = await postSubscription(creds, settings.citycode, settings.locationId, {
+      const subscription: Record<string, unknown> = {
         subscriptiontypeid: Number(body.subscriptiontypeid),
-        idcode: String(body.passCode),
-        idtype: Number(body.idType ?? 0),
         cost: Number(body.cost ?? 0),
         startdate: body.startdate ?? now.toISOString(),
-        expirationdate: body.expirationdate,
+      };
+      if (body.expirationdate) subscription.expirationdate = body.expirationdate;
+      const passCode = body.passCode != null ? String(body.passCode).trim() : "";
+      if (passCode) {
+        subscription.idcode = idcodeForFmsApi(passCode);
+        subscription.idtype = Number(body.idType ?? 0);
+      }
+      const res = await postSubscription(creds, settings.citycode, settings.locationId, subscription);
+      const subscriptionId = fmsSubscriptionIdFromResult(res.json);
+      const ok = res.ok && (fmsResultOk(res.json) || subscriptionId != null);
+      if (ok) await getProtectedReads(true);
+      return NextResponse.json({
+        ok,
+        status: res.status,
+        json: res.json,
+        subscriptionId,
+        message: ok
+          ? subscriptionId
+            ? `Abonnement aangemaakt (id ${subscriptionId})`
+            : "Abonnement aangemaakt"
+          : fmsResultErrorMessage(res) || `FMS HTTP ${res.status}`,
       });
-      return NextResponse.json({ ok: res.ok, status: res.status, json: res.json });
+    }
+    if (action === "subscribe") {
+      const settings = await getSettings();
+      const creds = credentialsFromSettings(settings);
+      const koppelcode = String(body.subscriptionId ?? body.koppelcode ?? "").trim();
+      const idcode = String(body.passCode ?? "").trim();
+      const passIdType = Number(body.idType ?? 0);
+      if (!koppelcode) {
+        return NextResponse.json({ ok: false, message: "Koppelcode ontbreekt" }, { status: 400 });
+      }
+      if (!idcode) {
+        return NextResponse.json({ ok: false, message: "Sleutelhanger (idcode) is verplicht" }, { status: 400 });
+      }
+      const res = await linkSubscriptionPass(
+        creds,
+        settings.citycode,
+        settings.locationId,
+        koppelcode,
+        idcode,
+        passIdType
+      );
+      const ok = res.ok && fmsResultOk(res.json);
+      if (ok) await getProtectedReads(true);
+      const via = /^\d+$/.test(koppelcode) ? "subscribe" : "koppelpas";
+      return NextResponse.json({
+        ok,
+        status: res.status,
+        json: res.json,
+        message: ok
+          ? `Sleutelhanger ${idcode} gekoppeld (${via}, code ${koppelcode})`
+          : fmsResultErrorMessage(res) || `FMS HTTP ${res.status}`,
+      });
     }
     return NextResponse.json({ message: "Onbekende actie" }, { status: 400 });
   } catch (e) {

@@ -102,7 +102,9 @@ export async function placeOnFloorWithoutScan(input: { barcode: string; biketype
       },
     });
   } else if (bicycle.floorPresent) {
-    throw new Error(`Barcode ${input.barcode} staat al op een plek (echte wereld). Eerst verwijderen zonder scan.`);
+    throw new Error(
+      `Fietssticker ${input.barcode} staat al op een plek (echte wereld). Eerst verwijderen zonder scan.`
+    );
   }
 
   const openVisit = await prisma.visit.findFirst({

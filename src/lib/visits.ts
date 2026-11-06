@@ -1,12 +1,14 @@
 import { prisma } from "@/lib/db";
+import { fmsBalanceForIdcode } from "@/lib/fms/balance-read";
 import { getProtectedReadsCached } from "@/lib/fms/metadata-cache";
+import { passHasActiveSubscription } from "@/lib/subscription-active";
 import { countFloorAssigned, countFloorVirtual } from "@/lib/real-world";
 import { assignParking, fmsSectionIdForVisit, OTHER_SECTION_ID, type ParkingAssignment } from "@/lib/parking";
+import { resolvePassForCheckIn } from "@/lib/pass-checkin";
 import { appNow, getSettings } from "@/lib/settings";
 import {
   activeStallingScope,
   findBicycleByBarcode,
-  findPassByCode,
 } from "@/lib/stalling-scope";
 import { fmsSyncNeedsResync } from "@/lib/visit-fms-sync-state";
 import { displayPassCode, isSyntheticPassCode, visitKnownAtBalie } from "@/lib/pass-display";
@@ -61,71 +63,32 @@ export async function checkIn(input: {
   const settings = await getSettings();
   const now = appNow(settings);
   const externalTransactionId = generateExternalTransactionId();
-
-  let pass = await findPassByCode(input.passCode);
-  if (!pass) {
-    pass = await prisma.pass.create({
-      data: {
-        stallingProfileId: settings.stallingProfileId,
-        passCode: input.passCode,
-        idType: input.idType ?? settings.defaultIdType,
-      },
-    });
-  }
-
-  let bicycle = await findBicycleByBarcode(input.barcode);
-  if (!bicycle) {
-    bicycle = await prisma.bicycle.create({
-      data: {
-        stallingProfileId: settings.stallingProfileId,
-        barcode: input.barcode,
-        biketypeId: input.biketypeId,
-        passId: pass.id,
-      },
-    });
-  } else if (!bicycle.passId) {
-    bicycle = await prisma.bicycle.update({
-      where: { id: bicycle.id },
-      data: { passId: pass.id },
-    });
-  }
+  const checkInType = input.checkInType ?? "user";
+  const passCode = input.passCode.trim();
+  const barcode = input.barcode.trim();
 
   const scope = await activeStallingScope();
-  if (!isSyntheticPassCode(input.passCode)) {
-    const otherOnPass = await prisma.visit.findFirst({
-      where: {
-        ...scope,
-        status: "open",
-        idcode: input.passCode,
-        NOT: { bicycleId: bicycle.id },
-      },
-      include: { bicycle: { select: { barcode: true } } },
-    });
-    if (otherOnPass) {
-      const otherBc = otherOnPass.bicycle?.barcode ?? "—";
-      throw new Error(
-        `Pas ${input.passCode} staat al in de stalling (barcode ${otherBc}). Eerst uitchecken.`
-      );
-    }
-  }
+  let bicycle = await findBicycleByBarcode(barcode);
 
-  const openVisit = await prisma.visit.findFirst({
-    where: { ...scope, bicycleId: bicycle.id, status: "open" },
-  });
+  const openVisitBefore = bicycle
+    ? await prisma.visit.findFirst({
+        where: { ...scope, bicycleId: bicycle.id, status: "open" },
+      })
+    : null;
 
   if (
-    openVisit &&
-    visitKnownAtBalie(openVisit) &&
-    openVisit.physicallyPresent &&
-    bicycle.floorPresent
+    openVisitBefore &&
+    visitKnownAtBalie(openVisitBefore) &&
+    openVisitBefore.physicallyPresent &&
+    bicycle?.floorPresent
   ) {
     throw new Error(
-      `Barcode ${input.barcode} staat al op de stalling (pas ${displayPassCode(openVisit.idcode)}). Eerst uitchecken of verwijderen zonder scan.`
+      `Fietssticker ${barcode} staat al op de stalling (sleutelhanger ${displayPassCode(openVisitBefore.idcode)}). Eerst uitchecken of verwijderen zonder scan.`
     );
   }
 
   let parking: ParkingAssignment;
-  if (bicycle.floorPresent && !openVisit) {
+  if (bicycle?.floorPresent && !openVisitBefore) {
     parking = {
       placementKind: bicycle.floorPlacementKind as "assigned" | "other",
       sectionId: bicycle.floorSectionId,
@@ -134,54 +97,101 @@ export async function checkIn(input: {
     };
   } else {
     parking = await assignParking(input.biketypeId, {
-      excludeVisitId: openVisit?.id,
-      excludeBicycleId: bicycle.id,
-    });
-  }
-
-  await prisma.bicycle.update({
-    where: { id: bicycle.id },
-    data: parkingToBicycleFloor(parking),
-  });
-
-  let visit;
-  if (openVisit) {
-    visit = await prisma.visit.update({
-      where: { id: openVisit.id },
-      data: {
-        ...parkingToVisitFields(parking),
-        ...fmsSyncNeedsResync(),
-        idcode: input.passCode,
-        inventoryBarcode: input.barcode,
-        passId: pass.id,
-        biketypeId: input.biketypeId,
-        idType: input.idType ?? pass.idType,
-        checkInType: input.checkInType ?? "user",
-      },
-    });
-  } else {
-    visit = await prisma.visit.create({
-      data: {
-        stallingProfileId: settings.stallingProfileId,
-        externalTransactionId,
-        passId: pass.id,
-        bicycleId: bicycle.id,
-        ...parkingToVisitFields(parking),
-        idcode: input.passCode,
-        inventoryBarcode: input.barcode,
-        idType: input.idType ?? pass.idType,
-        biketypeId: input.biketypeId,
-        checkInDate: now,
-        checkInType: input.checkInType ?? "user",
-        status: "open",
-        ...fmsSyncNeedsResync(),
-      },
+      excludeVisitId: openVisitBefore?.id,
+      excludeBicycleId: bicycle?.id,
     });
   }
 
   if (!parking.fmsSectionId) {
     throw new Error("Geen FMS-sector beschikbaar (metadata secties leeg?)");
   }
+
+  const visit = await prisma.$transaction(async (tx) => {
+    const resolved = await resolvePassForCheckIn(tx, settings, {
+      passCode,
+      barcode,
+      checkInType,
+      idType: input.idType,
+    });
+
+    if (!isSyntheticPassCode(resolved.idcode)) {
+      const otherOnPass = await tx.visit.findFirst({
+        where: {
+          ...scope,
+          status: "open",
+          idcode: resolved.idcode,
+          ...(bicycle ? { NOT: { bicycleId: bicycle.id } } : {}),
+        },
+        include: { bicycle: { select: { barcode: true } } },
+      });
+      if (otherOnPass) {
+        const otherBc = otherOnPass.bicycle?.barcode ?? "—";
+        throw new Error(
+          `Sleutelhanger ${resolved.idcode} staat al in de stalling (fietssticker ${otherBc}). Eerst uitchecken.`
+        );
+      }
+    }
+
+    if (!bicycle) {
+      bicycle = await tx.bicycle.create({
+        data: {
+          stallingProfileId: settings.stallingProfileId,
+          barcode,
+          biketypeId: input.biketypeId,
+          passId: resolved.passId,
+        },
+      });
+    } else {
+      if (resolved.passId && !bicycle.passId) {
+        bicycle = await tx.bicycle.update({
+          where: { id: bicycle.id },
+          data: { passId: resolved.passId },
+        });
+      }
+      bicycle = await tx.bicycle.update({
+        where: { id: bicycle.id },
+        data: parkingToBicycleFloor(parking),
+      });
+    }
+
+    const openVisit = await tx.visit.findFirst({
+      where: { ...scope, bicycleId: bicycle!.id, status: "open" },
+    });
+
+    if (openVisit) {
+      return tx.visit.update({
+        where: { id: openVisit.id },
+        data: {
+          ...parkingToVisitFields(parking),
+          ...fmsSyncNeedsResync(),
+          idcode: resolved.idcode,
+          inventoryBarcode: barcode,
+          passId: resolved.passId,
+          biketypeId: input.biketypeId,
+          idType: resolved.idType,
+          checkInType,
+        },
+      });
+    }
+
+    return tx.visit.create({
+      data: {
+        stallingProfileId: settings.stallingProfileId,
+        externalTransactionId,
+        passId: resolved.passId,
+        bicycleId: bicycle!.id,
+        ...parkingToVisitFields(parking),
+        idcode: resolved.idcode,
+        inventoryBarcode: barcode,
+        idType: resolved.idType,
+        biketypeId: input.biketypeId,
+        checkInDate: now,
+        checkInType,
+        status: "open",
+        ...fmsSyncNeedsResync(),
+      },
+    });
+  });
 
   return { visit, parking, localOnly: true as const };
 }
@@ -191,18 +201,9 @@ async function subscriptionCoversPass(
   biketypeId: number
 ): Promise<boolean> {
   try {
-    // Do not call VeiligStallen on checkout/check-in — use 5-min cache only (see getProtectedReads).
     const cached = await getProtectedReadsCached();
     if (!cached) return false;
-    const { subscriptions } = cached;
-    if (!Array.isArray(subscriptions)) return false;
-    for (const sub of subscriptions) {
-      const row = sub as Record<string, unknown>;
-      if (String(row.idcode ?? "") !== passCode) continue;
-      const exp = row.expirationdate ? new Date(String(row.expirationdate)) : null;
-      if (exp && exp < new Date()) continue;
-      return true;
-    }
+    return passHasActiveSubscription(passCode, cached.subscriptions);
   } catch {
     return false;
   }
@@ -236,6 +237,18 @@ export async function checkOut(input: {
   if (await subscriptionCoversPass(visit.idcode, visit.biketypeId)) {
     kosten = 0;
     waived = true;
+  }
+
+  if (!waived && input.paymentMethod === "saldo" && kosten > 0) {
+    const cached = await getProtectedReadsCached();
+    if (cached?.balances) {
+      const bal = fmsBalanceForIdcode(cached.balances, visit.idcode);
+      if (bal != null && bal + 1e-6 < kosten) {
+        throw new Error(
+          `Onvoldoende stallingstegoed voor ${visit.idcode}: ${bal.toFixed(2)} EUR, kosten ${kosten.toFixed(2)} EUR (cache). Vernieuw saldi op Aansluiten of kies contant/pin.`
+        );
+      }
+    }
   }
 
   const bicycleId = visit.bicycleId ?? visit.bicycle?.id ?? null;
@@ -324,7 +337,8 @@ export async function controleCheckoutMissing(visitId: string) {
         checkOutType: "controle",
         stallingsduur: duur,
         stallingskosten: new Decimal(kosten),
-        paymentMethod: waived ? "subscription" : "cash",
+        // Wilmar/stallingsbeheer: MT with costs; tegoed via addJsonSaldo (no contant/pin correction at controle).
+        paymentMethod: waived ? "subscription" : kosten > 0 ? "saldo" : "cash",
         subscriptionWaived: waived,
         status: "closed",
         physicallyPresent: false,
@@ -347,24 +361,16 @@ export async function controleCheckInUnexpected(input: {
   passCode: string;
   barcode: string;
   biketypeId: number;
+  idType?: number;
 }) {
   return checkIn({
     passCode: input.passCode,
     barcode: input.barcode,
     biketypeId: input.biketypeId,
+    idType: input.idType,
     checkInType: "controle",
   });
 }
 
-export async function syncOccupationInventory(
-  sectionId: string,
-  bikes: Array<{ idcode: string; idtype: number; bikeid: string }>
-) {
-  void sectionId;
-  void bikes;
-  const scope = await activeStallingScope();
-  await prisma.bicycle.updateMany({ where: scope, data: { updatedAt: new Date() } });
-  return { ok: true, status: 200, localOnly: true as const };
-}
-
+export { syncOccupationInventory } from "@/lib/fms/occupation-inventory-sync";
 export { OTHER_SECTION_ID };

@@ -41,7 +41,17 @@ export function VeiligstallenSyncBar() {
       body: JSON.stringify({ mode }),
     });
     const j = (await res.json()) as { ok?: boolean; message?: string };
-    setFlash(j.message ?? (j.ok ? "Bijgewerkt" : "Mislukt"));
+    const msg = j.message ?? (j.ok ? "Bijgewerkt" : "Mislukt");
+    setFlash(msg);
+    setStatus((prev) =>
+      prev
+        ? {
+            ...prev,
+            lastFmsBatchOk: j.ok ?? false,
+            lastFmsBatchMessage: msg,
+          }
+        : prev
+    );
     await load();
     window.dispatchEvent(new Event("local-db-updated"));
   }, [load]);

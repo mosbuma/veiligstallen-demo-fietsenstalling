@@ -1,4 +1,4 @@
-import { isSyntheticPassCode } from "@/lib/pass-display";
+import { formatIssuedPoolPassCode, isSyntheticPassCode } from "@/lib/pass-display";
 import { prisma } from "@/lib/db";
 import { getSettings, type AppSettingsDto } from "@/lib/settings";
 import { getActiveStallingProfileId } from "@/lib/stalling-profile";
@@ -36,8 +36,8 @@ export class PoolExhaustedError extends Error {
   constructor(kind: "pass" | "barcode") {
     super(
       kind === "pass"
-        ? "Pasbereik uitgeput — verhoog eind of pas volgende aan op Aansluiten"
-        : "Barcodebereik uitgeput — verhoog eind of pas volgende aan op Aansluiten"
+        ? "Sleutelhangerbereik uitgeput — verhoog eind of volgende aan op Aansluiten"
+        : "Fietsstickerbereik uitgeput — verhoog eind of volgende aan op Aansluiten"
     );
     this.name = "PoolExhaustedError";
   }
@@ -48,7 +48,7 @@ async function consumePassCode(): Promise<string> {
   return prisma.$transaction(async (tx) => {
     const row = await tx.stallingProfile.findUniqueOrThrow({ where: { id: profileId } });
     if (row.passRangeNext > row.passRangeEnd) throw new PoolExhaustedError("pass");
-    const passCode = String(row.passRangeNext);
+    const passCode = formatIssuedPoolPassCode(row.passRangeNext);
     await tx.stallingProfile.update({
       where: { id: profileId },
       data: { passRangeNext: row.passRangeNext + 1 },
@@ -90,11 +90,21 @@ export async function pickRandomUnusedPoolPass(
   const inUse = new Set(passCodesInUseFromStallingInventory(openVisits));
   const candidates = passes
     .map((p) => p.passCode)
+    .filter((code) => code.trim().length > 0)
     .filter((code) => !isSyntheticPassCode(code))
     .filter((code) => passCodeInPoolRange(code, s.passRangeStart, s.passRangeEnd))
     .filter((code) => !inUse.has(code));
-  if (candidates.length === 0) return null;
-  return candidates[Math.floor(Math.random() * candidates.length)]!;
+  if (candidates.length > 0) {
+    return candidates[Math.floor(Math.random() * candidates.length)]!;
+  }
+
+  const remaining =
+    s.passRangeNext <= s.passRangeEnd ? s.passRangeEnd - s.passRangeNext + 1 : 0;
+  for (let i = 0; i < remaining; i++) {
+    const { passCode } = await issuePass();
+    if (!inUse.has(passCode)) return passCode;
+  }
+  return null;
 }
 
 export async function issuePass(accountId?: string): Promise<{ passCode: string; id: string }> {

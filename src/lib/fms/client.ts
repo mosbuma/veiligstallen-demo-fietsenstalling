@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { FMS_CALL_TYPES } from "@/lib/fms-log-types";
+import { FMS_CALL_TYPES, occupationCallType } from "@/lib/fms-log-types";
 import type { AppSettingsDto } from "@/lib/settings";
 
 export type FmsCredentials = {
@@ -224,7 +224,7 @@ export async function postOccupation(
   const result = await fmsFetch(creds, "POST", path, body);
   await logFmsCall({
     visitId,
-    callType: FMS_CALL_TYPES.updateOccupation,
+    callType: occupationCallType(data),
     method: "POST",
     path,
     requestBody: body,
@@ -305,6 +305,71 @@ export async function postSubscription(
     result,
   });
   return result;
+}
+
+/** CF subscribe (nieuwe flow): activeringscode tmp_sleutelhanger (idtype 4) of tmp ov-chip (3) → echte pas. */
+export async function postKoppelpas(
+  creds: FmsCredentials,
+  citycode: string,
+  locationid: string,
+  idtype: number,
+  idcode: string,
+  newidcodes: { idtype: number; idcode: string },
+  visitId?: string
+): Promise<FmsCallResult> {
+  const path = v4LocationPath(
+    citycode,
+    locationid,
+    `/idcodes/${idtype}/${encodeURIComponent(idcode)}`
+  );
+  const body = { newidcodes };
+  const result = await fmsFetch(creds, "POST", path, body);
+  await logFmsCall({
+    visitId,
+    callType: FMS_CALL_TYPES.koppelpas,
+    method: "POST",
+    path,
+    requestBody: body,
+    result,
+  });
+  return result;
+}
+
+/** Wilmar v4 subscribe stap 2 — numeriek abonnement-id + sleutelhanger. */
+export async function postSubscribeLink(
+  creds: FmsCredentials,
+  citycode: string,
+  locationid: string,
+  subscriptionId: number,
+  payload: { idcode: string; idtype: number },
+  visitId?: string
+): Promise<FmsCallResult> {
+  const path = v4LocationPath(citycode, locationid, `/subscriptions/${subscriptionId}`);
+  const body = { idcode: payload.idcode, idtype: payload.idtype };
+  const result = await fmsFetch(creds, "POST", path, body);
+  await logFmsCall({
+    visitId,
+    callType: FMS_CALL_TYPES.subscribe,
+    method: "POST",
+    path,
+    requestBody: body,
+    result,
+  });
+  return result;
+}
+
+export function fmsSubscriptionIdFromResult(json: unknown): number | null {
+  if (!json || typeof json !== "object") return null;
+  const row = json as Record<string, unknown>;
+  const raw = row.subscriptionid ?? row.id ?? row.subscriptionId;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export function fmsResultOk(json: unknown): boolean {
+  if (!json || typeof json !== "object") return false;
+  const status = Number((json as Record<string, unknown>).status);
+  return status === 1;
 }
 
 export async function getLocation(

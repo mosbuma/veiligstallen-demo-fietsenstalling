@@ -6,6 +6,11 @@ import {
   runVeiligstallenBatchSync,
   runVeiligstallenSingleSync,
 } from "@/lib/fms-batch-sync";
+import {
+  runEmptyInventoryOccupationSync,
+  runInventoryOccupationSyncFromFloor,
+  runSyncOnlyOccupationSyncFromFloor,
+} from "@/lib/fms/occupation-inventory-sync";
 import { NextResponse } from "next/server";
 
 export async function GET(req: Request) {
@@ -30,6 +35,18 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     if (body.action === "resend" && body.visitId) {
       const result = await resendVisitToFms(String(body.visitId));
+      return NextResponse.json(result, { status: result.ok ? 200 : 400 });
+    }
+    if (body.action === "inventory-sync") {
+      const result = await runInventoryOccupationSyncFromFloor();
+      return NextResponse.json(result, { status: result.ok ? 200 : 400 });
+    }
+    if (body.action === "inventory-sync-synconly") {
+      const result = await runSyncOnlyOccupationSyncFromFloor();
+      return NextResponse.json(result, { status: result.ok ? 200 : 400 });
+    }
+    if (body.action === "inventory-empty") {
+      const result = await runEmptyInventoryOccupationSync();
       return NextResponse.json(result, { status: result.ok ? 200 : 400 });
     }
     const result =

@@ -373,7 +373,7 @@ export default function AansluitenPage() {
             ))}
           </select>
           <p className="mt-1 text-xs text-gray-600">
-            Elke opgeslagen stalling heeft eigen lokale passen, fietsen en transacties. Wisselen laadt andere
+            Elke opgeslagen stalling heeft eigen lokale sleutelhangers, fietsen en transacties. Wisselen laadt andere
             aansluitgegevens; balie/controle tonen alleen data van de actieve simulatie.
           </p>
         </div>
@@ -607,7 +607,7 @@ export default function AansluitenPage() {
             )}
           </div>
           <div>
-            <label className="label">Barcodebereik start / eind / volgende</label>
+            <label className="label">Fietsstickerbereik start / eind / volgende</label>
             <div className="flex gap-2">
               <input
                 type="number"
@@ -629,7 +629,7 @@ export default function AansluitenPage() {
               />
             </div>
             {pools && (
-              <p className="mt-1 text-xs text-gray-600">Beschikbaar: {pools.barcode.remaining} barcodes</p>
+              <p className="mt-1 text-xs text-gray-600">Beschikbaar: {pools.barcode.remaining} fietsstickers</p>
             )}
           </div>
         </div>
@@ -671,7 +671,7 @@ export default function AansluitenPage() {
               onChange={(e) => setBeheerClearPasses(e.target.checked)}
             />
             <span>
-              <strong>Sleutelhangers wissen</strong> — alle passen en gekoppelde accounts verwijderen (standaard uit).
+              <strong>Sleutelhangers wissen</strong> — alle sleutelhangers en gekoppelde accounts verwijderen (standaard uit).
             </span>
           </label>
           <label className="flex cursor-pointer items-start gap-2">

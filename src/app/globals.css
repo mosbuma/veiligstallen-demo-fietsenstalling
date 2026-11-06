@@ -1,4 +1,15 @@
 @import "tailwindcss";
+@import "react-day-picker/style.css";
+
+.wilmar-day-picker {
+  --rdp-accent-color: var(--accent);
+  --rdp-accent-background-color: #e6f2eb;
+  font-size: 0.875rem;
+}
+
+.wilmar-day-picker .rdp-day_button {
+  border-radius: 6px;
+}
 
 :root {
   --background: #f4f6f8;

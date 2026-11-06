@@ -303,10 +303,10 @@ export default function VeiligstallenPage() {
         { label: "Intern id", value: detail.id },
         { label: "MT-id", value: detail.externalTransactionId },
         { label: "Status", value: detail.status },
-        { label: "Pas / idcode", value: displayPassCode(detail.idcode) },
+        { label: "Sleutelhanger / idcode", value: displayPassCode(detail.idcode) },
         { label: "Id-type", value: String(detail.idType) },
-        { label: "Pas (record)", value: detail.passCode ?? "—" },
-        { label: "Barcode", value: detail.barcode || "—" },
+        { label: "Sleutelhanger (record)", value: detail.passCode ?? "—" },
+        { label: "Fietssticker", value: detail.barcode || "—" },
         { label: "Fietstype", value: String(detail.biketypeId) },
         { label: "Sectie", value: detail.sectionId || "—" },
         { label: "Plaats", value: detail.stallPlace || "—" },
@@ -585,7 +585,7 @@ export default function VeiligstallenPage() {
                 {filteredGlobalLogs.length === 0 && (
                   <tr>
                     <td colSpan={5} className="text-gray-500">
-                      Geen aanroepen (pas filters aan).
+                      Geen aanroepen (stel filters in).
                     </td>
                   </tr>
                 )}
@@ -608,8 +608,8 @@ export default function VeiligstallenPage() {
                   <th>Sync tijd</th>
                   <th>MT-id</th>
                   <th>Status</th>
-                  <th>Pas</th>
-                  <th>Barcode</th>
+                  <th>Sleutelhanger</th>
+                  <th>Fietssticker</th>
                   <th>In / uit type</th>
                   <th>Check-in</th>
                   <th>Check-out</th>

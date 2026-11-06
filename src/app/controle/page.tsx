@@ -161,6 +161,7 @@ export default function ControlePage() {
       checkedIn?: number;
       scannedPresent?: number;
       errors?: string[];
+      fms?: { ok?: boolean; message?: string; syncedVisits?: number };
     };
     setSessionActive(false);
     setPendingVisitIds([]);
@@ -172,14 +173,15 @@ export default function ControlePage() {
     await loadStalling();
     window.dispatchEvent(new Event("local-db-updated"));
 
+    const fmsPart = j.fms?.message ? ` VeiligStallen: ${j.fms.message}` : "";
     if (!j.ok) {
       setMessage(
-        `Controle afgerond met fouten: ${j.errors?.join(" · ") ?? "onbekend"} (${j.checkedOut ?? 0} controle-uit, ${j.checkedIn ?? 0} controle-in)`
+        `Controle afgerond met fouten: ${j.errors?.join(" · ") ?? "onbekend"} (${j.checkedOut ?? 0} controle-uit, ${j.checkedIn ?? 0} controle-in).${fmsPart}`
       );
       return;
     }
     setMessage(
-      `Controle afgerond (lokaal) — ${j.checkedOut ?? 0} controle-uit, ${j.checkedIn ?? 0} controle-in, ${j.scannedPresent ?? 0} aanwezig gescand. Sync VeiligStallen via Update op de balie.`
+      `Controle afgerond — ${j.checkedOut ?? 0} controle-uit, ${j.checkedIn ?? 0} controle-in, ${j.scannedPresent ?? 0} gescand.${fmsPart}`
     );
   };
 
@@ -190,7 +192,7 @@ export default function ControlePage() {
         <p className="text-sm text-gray-600">
           Zelfde lijst als op de balie. Bij start: snapshot van open inventaris. Elke scan verwijdert een
           inventaris-fiets van de openstaande lijst; onverwachte fietsen worden toegevoegd. Rest →
-          controle-uitcheck bij afronden. VeiligStallen via Update op de balie.
+          controle-uitcheck bij afronden. Daarna wordt automatisch naar VeiligStallen gesynchroniseerd (managed transactions).
         </p>
         <div className="flex flex-wrap gap-2">
           {!sessionActive ? (

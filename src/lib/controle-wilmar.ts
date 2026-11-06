@@ -1,7 +1,11 @@
 import { prisma } from "@/lib/db";
+import { runVeiligstallenBatchSync } from "@/lib/fms-batch-sync";
+import { runInventoryOccupationSyncFromFloor } from "@/lib/fms/occupation-inventory-sync";
+import { idTypeForSyncIdcode } from "@/lib/fms/sync-idcode";
+import { isSyntheticPassCode } from "@/lib/pass-display";
 import { activeStallingScope, findBicycleByBarcode } from "@/lib/stalling-scope";
 import { controleCheckInUnexpected, controleCheckoutMissing } from "@/lib/visits";
-import { fmsSyncNeedsResync } from "@/lib/visit-fms-sync-state";
+import { reconcileStaleFmsSyncQueue } from "@/lib/visit-fms-sync-state";
 
 export type ControleScanResult =
   | { ok: true; effect: "inventory_found"; visitId: string; barcode: string }
@@ -20,6 +24,37 @@ export function isPhysicallyInStalling(
   if (bicycle?.floorPresent) return true;
   if (visit?.status === "open" && visit.physicallyPresent) return true;
   return false;
+}
+
+/**
+ * Controle-in uses the fiets's own pas only if that pas is not already open on another barcode.
+ * Otherwise Wilmar-style: idcode = barcode (no new pas from pool, no stealing pas 1001).
+ */
+async function idcodeForControleCheckIn(bicycle: {
+  id: string;
+  barcode: string;
+  pass: { passCode: string; idType: number } | null;
+}): Promise<{ passCode: string; idType: number }> {
+  const scope = await activeStallingScope();
+  const linked = bicycle.pass?.passCode?.trim();
+  if (linked && !isSyntheticPassCode(linked)) {
+    const busyElsewhere = await prisma.visit.findFirst({
+      where: {
+        ...scope,
+        status: "open",
+        idcode: linked,
+        NOT: { bicycleId: bicycle.id },
+      },
+    });
+    if (!busyElsewhere) {
+      return { passCode: linked, idType: bicycle.pass!.idType };
+    }
+  }
+  const passCode = bicycle.barcode.trim();
+  return {
+    passCode,
+    idType: idTypeForSyncIdcode(passCode, bicycle.barcode, bicycle.pass?.idType ?? 0),
+  };
 }
 
 /** Snapshot at controle start: all open stalling-inventaris visit ids. */
@@ -44,7 +79,7 @@ export async function controleScanBarcode(input: {
   inventoryVisitIdsAtStart: string[];
 }): Promise<ControleScanResult> {
   const bc = input.barcode.trim();
-  if (!bc) return { ok: false, message: "Geen barcode" };
+  if (!bc) return { ok: false, message: "Geen fietssticker" };
 
   if (input.alreadyScannedBarcodes.includes(bc)) {
     return { ok: true, effect: "already_scanned", barcode: bc };
@@ -133,16 +168,22 @@ export async function finishWilmarControle(input: {
       });
       if (open) continue;
 
-      let bicycle = await findBicycleByBarcode(bc);
+      const bicycle = await prisma.bicycle.findFirst({
+        where: { ...(await activeStallingScope()), barcode: bc },
+        include: { pass: true },
+      });
       if (!bicycle) {
         errors.push(`Onverwachte scan ${bc}: geen fiets in systeem`);
         continue;
       }
 
+      const { passCode, idType } = await idcodeForControleCheckIn(bicycle);
+
       await controleCheckInUnexpected({
-        passCode: bc,
+        passCode,
         barcode: bc,
         biketypeId: bicycle.biketypeId,
+        idType,
       });
       checkedIn++;
     } catch (e) {
@@ -157,12 +198,33 @@ export async function finishWilmarControle(input: {
     data: { updatedAt: new Date() },
   });
 
+  await reconcileStaleFmsSyncQueue(scope.stallingProfileId);
+  // Inventarisatie (syncSector) vóór MT-batch: zelfde volgorde als stallingsbeheer na scanlijst.
+  const inventory = await runInventoryOccupationSyncFromFloor();
+  const fms = await runVeiligstallenBatchSync();
+
+  const allErrors = [...errors, ...(fms.errors ?? []), ...inventory.errors];
+  const fmsMessage = [
+    fms.message,
+    inventory.sections > 0
+      ? `syncSector: ${inventory.sections} sectie(s) (POST occupation data.bikes).`
+      : inventory.ok
+        ? "syncSector: overgeslagen (geen vloerfietsen / occupationMode= direct)."
+        : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return {
-    ok: errors.length === 0,
+    ok: errors.length === 0 && fms.ok && inventory.ok,
     checkedOut,
     checkedIn,
     scannedPresent: input.scannedBarcodes.length,
-    errors,
-    localOnly: true as const,
+    errors: allErrors,
+    fms: {
+      ok: fms.ok && inventory.ok,
+      message: fmsMessage,
+      syncedVisits: fms.syncedVisits,
+      inventorySections: inventory.sections,
+    },
   };
 }

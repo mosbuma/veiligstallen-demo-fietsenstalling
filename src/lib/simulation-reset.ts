@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { runVeiligstallenBatchSync } from "@/lib/fms-batch-sync";
+import { runEmptyInventoryOccupationSync } from "@/lib/fms/occupation-inventory-sync";
 import { appNow, getSettings } from "@/lib/settings";
 import { activeStallingScope } from "@/lib/stalling-scope";
 import { calculateTransactionCost, stallingsduurMinutes } from "@/lib/tariff";
@@ -171,6 +172,8 @@ export async function resetSimulation(
     fmsSyncRuns = fms.runs;
     fmsSyncedVisits = fms.syncedVisits;
     fmsErrors.push(...fms.errors);
+    const emptySync = await runEmptyInventoryOccupationSync();
+    if (emptySync.errors.length) fmsErrors.push(...emptySync.errors);
     pendingBeforeHistoryWipe = await prisma.visit.count({
       where: { ...(await activeStallingScope()), fmsSyncStatus: "pending" },
     });

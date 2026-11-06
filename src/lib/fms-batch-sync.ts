@@ -4,20 +4,23 @@ import {
   fmsFullUrl,
   fmsResultErrorMessage,
   FMS_MANAGED_TRANSACTIONS_BATCH_MAX,
+  fmsResultOk,
   postManagedTransaction,
   postManagedTransactionsBatchForSection,
   postSaldo,
+  postSaveBike,
   type FmsCallResult,
   type FmsCredentials,
 } from "@/lib/fms/client";
 import { toFmsCheckType } from "@/lib/fms/check-types";
+import { FMS_CALL_TYPES } from "@/lib/fms-log-types";
 import { listFmsLogEntries } from "@/lib/fms-log-query";
 import type { FmsLogEntry } from "@/lib/fms-log-view";
 import type { AppSettingsDto } from "@/lib/settings";
 import type { Bicycle, Visit } from "@prisma/client";
 import { getMetadataBundle, parseSections } from "@/lib/fms/metadata-cache";
 import { fmsSectionIdForVisit } from "@/lib/parking";
-import { isSyntheticPassCode } from "@/lib/pass-display";
+import { idcodeForFmsApi, isSyntheticPassCode } from "@/lib/pass-display";
 import { inventarisBarcode } from "@/lib/stalling-inventory";
 import { fmsSectionForFloor, postFloorOccupation } from "@/lib/real-world";
 import { appNow, getSettings } from "@/lib/settings";
@@ -26,6 +29,7 @@ import {
   markVisitFmsFailed,
   markVisitFmsSynced,
   markVisitsFmsSynced,
+  reconcileStaleFmsSyncQueue,
 } from "@/lib/visit-fms-sync-state";
 
 async function lastFmsBatchAt(): Promise<Date> {
@@ -114,10 +118,22 @@ type VisitWithBike = Visit & {
   pass?: { passCode: string } | null;
 };
 
+async function visitFmsStepAlreadyOk(visitId: string, callType: string): Promise<boolean> {
+  const logs = await prisma.fmsLog.findMany({
+    where: { visitId, callType },
+    orderBy: { createdAt: "desc" },
+    take: 3,
+    select: { ok: true, statusCode: true, responseBody: true },
+  });
+  return logs.some(
+    (l) => l.ok && l.statusCode != null && l.statusCode >= 200 && l.statusCode < 300 && fmsResultOk(l.responseBody)
+  );
+}
+
 function fmsIdcodeForVisit(visit: VisitWithBike): string {
   for (const raw of [visit.idcode, visit.pass?.passCode]) {
     const code = (raw ?? "").trim();
-    if (code && !isSyntheticPassCode(code)) return code;
+    if (code && !isSyntheticPassCode(code)) return idcodeForFmsApi(code);
   }
   return "";
 }
@@ -159,7 +175,7 @@ function buildManagedTransactionForVisit(visit: VisitWithBike): {
   }
   const idcode = fmsIdcodeForVisit(visit);
   if (!idcode) {
-    return { error: `Geen idcode (pas) voor MT ${visit.externalTransactionId}` };
+    return { error: `Geen idcode (sleutelhanger) voor MT ${visit.externalTransactionId}` };
   }
   const barcode = inventarisBarcode(visit);
   const managed: Record<string, unknown> = {
@@ -183,6 +199,40 @@ function buildManagedTransactionForVisit(visit: VisitWithBike): {
   return { managed, fmsSection };
 }
 
+async function postSaveBikeForVisitIfNeeded(
+  visit: VisitWithBike,
+  settings: AppSettingsDto,
+  creds: FmsCredentials,
+  calls: FmsCallTrace[]
+): Promise<string | null> {
+  const barcode = inventarisBarcode(visit);
+  if (!barcode) return null;
+  const idcode = fmsIdcodeForVisit(visit);
+  if (!idcode) return null;
+  if (await visitFmsStepAlreadyOk(visit.id, FMS_CALL_TYPES.saveJsonBike)) return null;
+  const bikePayload = {
+    bikeid: barcode,
+    biketypeid: visit.biketypeId,
+    transactiondate: visit.checkInDate.toISOString(),
+  };
+  const path = `/api/fms/v4/citycodes/${encodeURIComponent(settings.citycode)}/locations/${encodeURIComponent(settings.locationId)}/idcodes/${visit.idType}/${encodeURIComponent(idcode)}/bike`;
+  const res = await postSaveBike(
+    creds,
+    settings.citycode,
+    settings.locationId,
+    visit.idType,
+    idcode,
+    bikePayload,
+    visit.id
+  );
+  calls.push(traceCall("saveJsonBike", creds, "POST", path, { bike: bikePayload }, res));
+  if (!res.ok || !fmsResultOk(res.json)) {
+    const detail = fmsResultErrorMessage(res);
+    return `saveJsonBike ${idcode}: ${detail || `HTTP ${res.status}`}`;
+  }
+  return null;
+}
+
 async function postSaldoForVisitIfNeeded(
   visit: VisitWithBike,
   settings: AppSettingsDto,
@@ -192,20 +242,30 @@ async function postSaldoForVisitIfNeeded(
   if (
     visit.status !== "closed" ||
     !visit.checkOutDate ||
-    visit.paymentMethod !== "saldo" ||
     visit.stallingskosten == null ||
     Number(visit.stallingskosten) <= 0 ||
     visit.subscriptionWaived
   ) {
     return null;
   }
+  const cost = Number(visit.stallingskosten);
+  let amount: number | null = null;
+  if (visit.paymentMethod === "saldo") {
+    amount = -cost;
+  } else if (visit.paymentMethod === "cash" || visit.paymentMethod === "pin") {
+    // Stallingsbeheer: FMS debiteert via MT; server crediteert tegoed terug bij contant/pin.
+    amount = cost;
+  } else {
+    return null;
+  }
   const saldoPayload = {
-    amount: -Number(visit.stallingskosten),
+    amount,
     paymenttypeid: 1,
     transactiondate: visit.checkOutDate.toISOString(),
   };
   const idcode = fmsIdcodeForVisit(visit);
   if (!idcode) return `Saldo: geen idcode voor ${visit.externalTransactionId}`;
+  if (await visitFmsStepAlreadyOk(visit.id, FMS_CALL_TYPES.addJsonSaldo)) return null;
   const saldo = await postSaldo(
     creds,
     settings.citycode,
@@ -225,7 +285,10 @@ async function postSaldoForVisitIfNeeded(
       saldo
     )
   );
-  if (!saldo.ok) return `Saldo ${idcode}: HTTP ${saldo.status}`;
+  if (!saldo.ok || !fmsResultOk(saldo.json)) {
+    const detail = fmsResultErrorMessage(saldo);
+    return `Saldo ${idcode}: ${detail || `HTTP ${saldo.status}`}`;
+  }
   return null;
 }
 
@@ -241,6 +304,8 @@ export async function syncOneVisitToFms(
   if ("error" in built) {
     return { ok: false, errors: [built.error], calls };
   }
+  const bikeErr = await postSaveBikeForVisitIfNeeded(visit, settings, creds, calls);
+  if (bikeErr) errors.push(bikeErr);
   const saldoErr = await postSaldoForVisitIfNeeded(visit, settings, creds, calls);
   if (saldoErr) errors.push(saldoErr);
 
@@ -409,6 +474,7 @@ export async function runVeiligstallenBatchSync(): Promise<{
   let syncedVisits = 0;
 
   const scope = await activeStallingScope();
+  await reconcileStaleFmsSyncQueue(scope.stallingProfileId);
   const pendingVisits = await prisma.visit.findMany({
     where: { ...scope, fmsSyncStatus: "pending" },
     include: { bicycle: true, pass: { select: { passCode: true } } },
@@ -435,16 +501,21 @@ export async function runVeiligstallenBatchSync(): Promise<{
   }
 
   let batchVisitIds: string[] = [];
+  const preparedForMt: typeof prepared = [];
   if (prepared.length > 0) {
-    for (const { visit } of prepared) {
+    for (const item of prepared) {
+      const { visit } = item;
+      const bikeErr = await postSaveBikeForVisitIfNeeded(visit, settings, creds, []);
+      if (bikeErr) syncErrors.push(bikeErr);
       const saldoErr = await postSaldoForVisitIfNeeded(visit, settings, creds, []);
       if (saldoErr) syncErrors.push(saldoErr);
+      if (!bikeErr && !saldoErr) preparedForMt.push(item);
     }
   }
 
-  if (prepared.length > 0 && syncErrors.length === 0) {
+  if (preparedForMt.length > 0) {
     const bySection = new Map<string, { managed: Record<string, unknown>; visitId: string }[]>();
-    for (const p of prepared) {
+    for (const p of preparedForMt) {
       const list = bySection.get(p.fmsSection) ?? [];
       list.push({ managed: p.managed, visitId: p.visit.id });
       bySection.set(p.fmsSection, list);
@@ -488,10 +559,13 @@ export async function runVeiligstallenBatchSync(): Promise<{
 
   const errors = [...prepErrors, ...syncErrors];
   const ok = errors.length === 0;
-  const message =
-    errors.length === 0
+  const hadWork =
+    syncedVisits > 0 || floorChanged > 0 || pendingVisits.length > 0;
+  const message = ok
+    ? hadWork
       ? `VeiligStallen bijgewerkt (${syncedVisits} transacties, bezetting).`
-      : `Deels gelukt (${syncedVisits} transacties). ${errors.slice(0, 3).join(" · ")}`;
+      : "Geen openstaande wijzigingen — VeiligStallen is bij."
+    : `Deels gelukt (${syncedVisits} transacties). ${errors.slice(0, 3).join(" · ")}`;
 
   if (syncErrors.length === 0 && batchVisitIds.length > 0) {
     await markVisitsFmsSynced(batchVisitIds, now, message);
@@ -500,9 +574,9 @@ export async function runVeiligstallenBatchSync(): Promise<{
   await prisma.appSettings.update({
     where: { id: "default" },
     data: {
-      ...(syncErrors.length === 0 && batchVisitIds.length > 0
-        ? { lastFmsBatchAt: now, lastFmsBatchOk: prepErrors.length === 0, lastFmsBatchMessage: message }
-        : { lastFmsBatchOk: false, lastFmsBatchMessage: message }),
+      lastFmsBatchOk: ok,
+      lastFmsBatchMessage: message,
+      ...(ok ? { lastFmsBatchAt: now } : {}),
     },
   });
 
@@ -599,9 +673,18 @@ export async function runVeiligstallenSingleSync(): Promise<{
     }
   }
 
+  const message = "Geen openstaande wijzigingen — VeiligStallen is bij.";
+  await prisma.appSettings.update({
+    where: { id: "default" },
+    data: {
+      lastFmsBatchAt: now,
+      lastFmsBatchOk: true,
+      lastFmsBatchMessage: message,
+    },
+  });
   return {
     ok: true,
-    message: "Niets te synchroniseren.",
+    message,
     syncedVisits: 0,
     errors: [],
     mode: "single",

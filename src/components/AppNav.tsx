@@ -11,6 +11,7 @@ const links = [
   { href: "/administratie", label: "Administratie" },
   { href: "/financien", label: "Financiën" },
   { href: "/check", label: "Check" },
+  { href: "/wilmar", label: "Wilmar" },
   { href: "/periferie", label: "Periferie" },
   { href: "/instellingen", label: "Klok" },
 ];

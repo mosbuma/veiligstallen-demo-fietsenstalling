@@ -46,7 +46,7 @@ export default function PeriferiePage() {
       <div className="card prose prose-sm max-w-none">
         <h2 className="text-xl font-bold">Periferie & lokale instellingen</h2>
         <p>
-          VeiligStallen-koppeling en pas-/barcodebereiken staan op{" "}
+          VeiligStallen-koppeling en sleutelhanger-/fietsstickerbereiken staan op{" "}
           <Link href="/aansluiten">Aansluiten</Link>. Hier stel je bezettingsmodus en het lokale tarief
           voor <code>stallingskosten</code> in (FMS berekent dat niet).
         </p>

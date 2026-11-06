@@ -52,8 +52,8 @@ export function StallingInventoryTable({
       <table className="table">
         <thead>
           <tr>
-            <th>Barcode</th>
-            <th>Pas</th>
+            <th>Fietssticker</th>
+            <th>Sleutelhanger</th>
             <th>Sectie</th>
             <th>Plaats</th>
             <th>Fietstype</th>

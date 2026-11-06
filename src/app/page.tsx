@@ -1,9 +1,10 @@
 "use client";
 
 import { BalieDisplayEmbeds } from "@/components/BalieDisplayEmbeds";
+import { BaliePassFmsActions } from "@/components/BaliePassFmsActions";
 import { StallingInventoryTable } from "@/components/StallingInventoryTable";
 import { useMetadata } from "@/components/MetadataLoader";
-import { isSyntheticPassCode, passCodeForInput } from "@/lib/pass-display";
+import { canonicalPoolPassCode, isSyntheticPassCode, passCodeForInput } from "@/lib/pass-display";
 import { stallingHandlesBiketype } from "@/lib/biketype-stalling";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -37,8 +38,17 @@ type OutsideBike = {
 
 type PoolSlice = { remaining: number };
 
+type ScannablePass = {
+  passCode: string;
+  idType: number;
+  hasAbo: boolean;
+  openVisit: boolean;
+};
+
+type BuitenPanelTab = "fietssticker" | "sleutelhangers";
+
 const BALIE_RANDOM_PASS_KEY = "balie-random-pass";
-const GEEN_PAS_BESCHIKBAAR = "Geen Pas beschikbaar";
+const GEEN_SLEUTELHANGER_BESCHIKBAAR = "Geen sleutelhanger beschikbaar";
 
 function readBalieRandomPassPref(): boolean {
   if (typeof window === "undefined") return true;
@@ -61,6 +71,9 @@ export default function BaliePage() {
   const [buitenTypeFilter, setBuitenTypeFilter] = useState<string>("all");
   const [pools, setPools] = useState<{ pass: PoolSlice; barcode: PoolSlice } | null>(null);
   const [randomPass, setRandomPass] = useState(true);
+  const [buitenPanelTab, setBuitenPanelTab] = useState<BuitenPanelTab>("fietssticker");
+  const [scannablePasses, setScannablePasses] = useState<ScannablePass[]>([]);
+  const [passScanInput, setPassScanInput] = useState("");
 
   const pickRandomPass = useCallback(async () => {
     const poolRes = await fetch("/api/pools");
@@ -101,13 +114,21 @@ export default function BaliePage() {
       .then((p) => setPools(p));
   }, []);
 
+  const loadScannablePasses = useCallback(async () => {
+    const res = await fetch("/api/pools/passes");
+    if (!res.ok) return;
+    const j = (await res.json()) as { passes?: ScannablePass[] };
+    setScannablePasses(j.passes ?? []);
+  }, []);
+
   const refreshAll = useCallback(() => {
     void loadOpen();
     void loadOutside();
     void loadStallingFloor();
     loadPools();
+    void loadScannablePasses();
     window.dispatchEvent(new Event("local-db-updated"));
-  }, [loadOpen, loadOutside, loadStallingFloor, loadPools]);
+  }, [loadOpen, loadOutside, loadStallingFloor, loadPools, loadScannablePasses]);
 
   useEffect(() => {
     refreshAll();
@@ -179,7 +200,7 @@ export default function BaliePage() {
   }, [passCode]);
 
   const hasBarcode = Boolean(barcode.trim());
-  const showGeenPasBeschikbaar = randomPass && !validPassEntered;
+  const showGeenSleutelhangerBeschikbaar = randomPass && !validPassEntered;
   const highlightSleutelhanger = hasBarcode && !validPassEntered;
   const showCheckIn = validPassEntered && hasBarcode && !activeOpenVisit;
   /** Uitchecken: gescande fiets met open bezoek — geen pas in pool / pasveld nodig. */
@@ -308,7 +329,7 @@ export default function BaliePage() {
       setPassCode(j.passCode);
       setMessage(null);
     } else {
-      setMessage(j.message ?? "Pas uitgeven mislukt");
+      setMessage(j.message ?? "Sleutelhanger uitgeven mislukt");
     }
     loadPools();
   };
@@ -323,9 +344,9 @@ export default function BaliePage() {
     const j = await res.json();
     if (j.ok && j.barcode) {
       setBarcode(j.barcode);
-      setMessage(`Barcode uitgegeven: ${j.barcode} (${biketypeName(typeId)})`);
+      setMessage(`Fietssticker uitgegeven: ${j.barcode} (${biketypeName(typeId)})`);
     } else {
-      setMessage(j.message ?? "Barcode uitgeven mislukt");
+      setMessage(j.message ?? "Fietssticker uitgeven mislukt");
     }
     refreshAll();
   };
@@ -333,6 +354,25 @@ export default function BaliePage() {
   const selectOutsideBarcode = (bike: OutsideBike) => {
     setBarcode(bike.barcode);
   };
+
+  const selectPassAtBalie = useCallback((code: string) => {
+    const trimmed = code.trim();
+    if (!trimmed || isSyntheticPassCode(trimmed)) return;
+    setRandomPass(false);
+    localStorage.setItem(BALIE_RANDOM_PASS_KEY, "false");
+    setPassCode(canonicalPoolPassCode(trimmed));
+    setBuitenPanelTab("fietssticker");
+    setPassScanInput("");
+  }, []);
+
+  const submitPassScan = () => {
+    selectPassAtBalie(passScanInput);
+  };
+
+  const buitenTabClass = (t: BuitenPanelTab) =>
+    buitenPanelTab === t
+      ? "rounded bg-[var(--accent)] px-2 py-0.5 text-xs font-semibold text-white"
+      : "rounded px-2 py-0.5 text-xs hover:bg-white";
 
   const selectInsideVisit = (visit: Visit) => {
     setBarcode(visit.bicycle?.barcode ?? "");
@@ -352,9 +392,25 @@ export default function BaliePage() {
           <h2 className="text-lg font-bold">Buiten ({outsideBikes.length})</h2>
           {pools && (
             <span className="text-xs text-gray-600">
-              Pool: {pools.pass.remaining} passen · {pools.barcode.remaining} barcodes
+              Pool: {pools.pass.remaining} sleutelhangers · {pools.barcode.remaining} fietsstickers
             </span>
           )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] pb-2">
+          <button
+            type="button"
+            className={buitenTabClass("fietssticker")}
+            onClick={() => setBuitenPanelTab("fietssticker")}
+          >
+            Fietssticker ({outsideBikes.length})
+          </button>
+          <button
+            type="button"
+            className={buitenTabClass("sleutelhangers")}
+            onClick={() => setBuitenPanelTab("sleutelhangers")}
+          >
+            Sleutelhangers ({scannablePasses.length})
+          </button>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -362,7 +418,7 @@ export default function BaliePage() {
             className="btn btn-secondary text-sm"
             onClick={() => setBarcodeIssueOpen(true)}
           >
-            Barcode uitgeven
+            Fietssticker uitgeven
           </button>
         </div>
         {barcodeIssueOpen && (
@@ -400,7 +456,7 @@ export default function BaliePage() {
             </div>
           </div>
         )}
-        {!barcodeIssueOpen && (
+        {!barcodeIssueOpen && buitenPanelTab === "fietssticker" && (
           <>
             <div>
               <label className="label">Filter fietstype</label>
@@ -419,65 +475,127 @@ export default function BaliePage() {
               </select>
             </div>
             <p className="text-xs text-gray-600">
-              Fietsen buiten de stallingvloer (inclusief inventaris zonder fysieke fiets). Klik → Balie /
-              scan.
+              Fietsen buiten de stallingvloer (inclusief inventaris zonder fysieke fiets). Klik → fietssticker
+              op balie.
             </p>
             <table className="table">
               <thead>
                 <tr>
-              <th>Barcode</th>
-              <th>Fietstype</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredOutside.map((b) => {
-              const selected = barcode === b.barcode;
-              return (
-                <tr
-                  key={b.id}
-                  className={`balie-scan-row ${selected ? "bg-amber-100 ring-1 ring-amber-400" : "hover:bg-slate-50"}`}
-                  onClick={() => selectOutsideBarcode(b)}
-                >
-                  <td className={`font-mono text-sm ${selected ? "font-semibold" : ""}`}>
-                    {b.barcode || "—"}
-                  </td>
-                  <td className="text-sm">
-                    <span
-                      className="inline-flex max-w-full items-center gap-0.5"
-                      title={
-                        b.openVisitId
-                          ? "Nog in inventaris (geen fysieke fiets op de vloer)"
-                          : undefined
-                      }
-                    >
-                      <span className="min-w-0 truncate">{biketypeName(b.biketypeId)}</span>
-                      {b.openVisitId && (
-                        <span className="inventaris-warn-icon" aria-hidden>
-                          <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.25"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          >
-                            <circle cx="12" cy="12" r="8.25" />
-                            <path d="M12 8.25v4.25" />
-                            <circle cx="12" cy="15.25" r="0.6" fill="currentColor" stroke="none" />
-                          </svg>
-                        </span>
-                      )}
-                    </span>
-                  </td>
+                  <th>Fietssticker</th>
+                  <th>Fietstype</th>
                 </tr>
-              );
-            })}
-            {filteredOutside.length === 0 && (
-              <tr>
-                <td colSpan={2} className="text-sm text-gray-500">
+              </thead>
+              <tbody>
+                {filteredOutside.map((b) => {
+                  const selected = barcode === b.barcode;
+                  return (
+                    <tr
+                      key={b.id}
+                      className={`balie-scan-row ${selected ? "bg-amber-100 ring-1 ring-amber-400" : "hover:bg-slate-50"}`}
+                      onClick={() => selectOutsideBarcode(b)}
+                    >
+                      <td className={`font-mono text-sm ${selected ? "font-semibold" : ""}`}>
+                        {b.barcode || "—"}
+                      </td>
+                      <td className="text-sm">
+                        <span
+                          className="inline-flex max-w-full items-center gap-0.5"
+                          title={
+                            b.openVisitId
+                              ? "Nog in inventaris (geen fysieke fiets op de vloer)"
+                              : undefined
+                          }
+                        >
+                          <span className="min-w-0 truncate">{biketypeName(b.biketypeId)}</span>
+                          {b.openVisitId && (
+                            <span className="inventaris-warn-icon" aria-hidden>
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.25"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <circle cx="12" cy="12" r="8.25" />
+                                <path d="M12 8.25v4.25" />
+                                <circle cx="12" cy="15.25" r="0.6" fill="currentColor" stroke="none" />
+                              </svg>
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredOutside.length === 0 && (
+                  <tr>
+                    <td colSpan={2} className="text-sm text-gray-500">
                       Geen fietsen buiten
                       {buitenTypeFilter !== "all" ? " voor dit filter" : ""}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {!barcodeIssueOpen && buitenPanelTab === "sleutelhangers" && (
+          <>
+            <p className="text-xs text-gray-600">
+              Uitgegeven sleutelhangers in het sleutelhangerbereik. Klik of scan → vult nummer op de balie en
+              opent tab Fietssticker.
+            </p>
+            <input
+              className="input font-mono text-sm"
+              placeholder="Scan sleutelhanger…"
+              aria-label="Scan sleutelhanger"
+              value={passScanInput}
+              onChange={(e) => setPassScanInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  submitPassScan();
+                }
+              }}
+            />
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Sleutelhanger</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {scannablePasses.map((p) => {
+                  const selected = passCode.trim() === p.passCode;
+                  return (
+                    <tr
+                      key={p.passCode}
+                      className={`balie-scan-row ${selected ? "bg-amber-100 ring-1 ring-amber-400" : "hover:bg-slate-50"} ${p.openVisit ? "text-gray-500" : ""}`}
+                      onClick={() => selectPassAtBalie(p.passCode)}
+                      title={p.openVisit ? "Open inventaris op deze sleutelhanger" : undefined}
+                    >
+                      <td className={`font-mono text-sm ${selected ? "font-semibold" : ""}`}>
+                        {p.passCode}
+                        {p.openVisit ? " · in use" : ""}
+                      </td>
+                      <td className="text-right">
+                        {p.hasAbo && (
+                          <span className="inline-block rounded-full bg-[var(--accent)] px-2 py-0.5 text-xs font-semibold text-white">
+                            abo
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {scannablePasses.length === 0 && (
+                  <tr>
+                    <td colSpan={2} className="text-sm text-gray-500">
+                      Geen sleutelhangers in pool — uitgeven op balie of Administratie
                     </td>
                   </tr>
                 )}
@@ -503,13 +621,13 @@ export default function BaliePage() {
             <h3 className="text-sm font-bold text-[var(--accent)]">Sleutelhanger</h3>
             <div>
               <div className="flex flex-wrap items-stretch gap-2">
-                {showGeenPasBeschikbaar ? (
+                {showGeenSleutelhangerBeschikbaar ? (
                   <div
                     id="balie-sleutelhanger"
                     className="flex min-h-[2.25rem] min-w-[8rem] flex-1 items-center rounded-md border border-[var(--border)] bg-white px-[0.6rem] py-[0.45rem] text-sm font-semibold text-[var(--foreground)]"
                     role="status"
                   >
-                    {GEEN_PAS_BESCHIKBAAR}
+                    {GEEN_SLEUTELHANGER_BESCHIKBAAR}
                   </div>
                 ) : (
                   <input
@@ -518,6 +636,14 @@ export default function BaliePage() {
                     className={`input min-w-[8rem] flex-1 font-mono ${randomPass ? "bg-gray-50" : ""}`}
                     value={passCode}
                     onChange={(e) => setPassCode(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" || randomPass) return;
+                      const trimmed = e.currentTarget.value.trim();
+                      if (trimmed && !isSyntheticPassCode(trimmed)) {
+                        setPassCode(canonicalPoolPassCode(trimmed));
+                        setBuitenPanelTab("fietssticker");
+                      }
+                    }}
                     autoComplete="off"
                     readOnly={randomPass}
                     aria-readonly={randomPass}
@@ -530,16 +656,21 @@ export default function BaliePage() {
                   title={
                     passPoolCanIssue
                       ? undefined
-                      : "Pasbereik uitgeput — pas volgende/eind aan op Aansluiten"
+                      : "Sleutelhangerbereik uitgeput — volgende/eind aan op Aansluiten"
                   }
                   onClick={() => void issuePass()}
                 >
-                  Pas uitgeven
+                  Sleutelhanger uitgeven
                 </button>
               </div>
             </div>
+            <BaliePassFmsActions
+              passCode={passCode}
+              passActive={validPassEntered}
+              onFeedback={setMessage}
+            />
             {!randomPass && !validPassEntered && passCode.trim() && (
-              <p className="text-xs text-amber-800">Geen geldige pas (leeg of systeemcode).</p>
+              <p className="text-xs text-amber-800">Geen geldige sleutelhanger (leeg of systeemcode).</p>
             )}
             <label className="flex cursor-pointer items-center gap-2 text-sm">
               <input
@@ -547,16 +678,16 @@ export default function BaliePage() {
                 checked={randomPass}
                 onChange={(e) => setRandomPassPersist(e.target.checked)}
               />
-              Willekeurige pas (vrij uit pool na in/uitchecken)
+              Willekeurige sleutelhanger (vrij uit pool na in/uitchecken)
             </label>
           </section>
 
           {showBarcodePanel && (
             <section className="space-y-3 rounded-lg border border-[var(--border)] bg-white/60 p-3">
-              <h3 className="text-sm font-bold text-[var(--accent)]">Barcode Fiets</h3>
+              <h3 className="text-sm font-bold text-[var(--accent)]">Fietssticker</h3>
               {showCheckOut && !validPassEntered && (
                 <p className="text-xs text-gray-600">
-                  Open bezoek geselecteerd — uitchecken kan zonder pas in te voeren.
+                  Open bezoek geselecteerd — uitchecken kan zonder sleutelhanger in te voeren.
                 </p>
               )}
 
@@ -568,7 +699,7 @@ export default function BaliePage() {
 
               <input
                 className="input font-mono"
-                aria-label="Barcode fiets"
+                aria-label="Fietssticker"
                 value={barcode}
                 onChange={(e) => setBarcode(e.target.value)}
               />

@@ -1,6 +1,25 @@
 import { prisma } from "@/lib/db";
+import { getActiveStallingProfileId } from "@/lib/stalling-profile";
 
 export type FmsSyncStatus = "pending" | "synced" | "failed";
+
+/**
+ * Re-queue closed visits whose local state changed after the last successful FMS push
+ * (e.g. balie synced open check-in, then controle closed with checkouttype controle).
+ */
+export async function reconcileStaleFmsSyncQueue(stallingProfileId?: string): Promise<number> {
+  const profileId = stallingProfileId ?? (await getActiveStallingProfileId());
+  const updated = await prisma.$executeRaw`
+    UPDATE "Visit"
+    SET "fmsSyncStatus" = 'pending',
+        "fmsSyncMessage" = 'Opnieuw in wachtrij (lokaal gewijzigd na vorige sync)'
+    WHERE "stallingProfileId" = ${profileId}
+      AND "fmsSyncStatus" = 'synced'
+      AND "status" = 'closed'
+      AND ("fmsSyncAt" IS NULL OR "fmsSyncAt" < "updatedAt")
+  `;
+  return Number(updated);
+}
 
 /** Reset when local transaction data changes and must be pushed again. */
 export function fmsSyncNeedsResync() {
